@@ -1,5 +1,9 @@
 # DST Dedicated Linux Server Manager
 
+**Tiếng Việt** | [English](README.en.md)
+
+![Bảng điều khiển](docs/screenshots/dashboard.png)
+
 Web panel quản lý nhiều **Don't Starve Together Dedicated Server** trên Linux. Viết bằng Python (FastAPI), một file `app.py` và một trang `static/index.html`, không cần database.
 
 Cách quản lý shard (gửi lệnh qua stdin, đọc log, chèn Lua để lấy thống kê) tham khảo từ [vox-launcher](https://github.com/diogo-webber/vox-launcher), viết lại cho Linux và chạy trên web.
@@ -18,6 +22,14 @@ Cách quản lý shard (gửi lệnh qua stdin, đọc log, chèn Lua để lấ
 - **Upload thế giới**: tải file `.zip` lên (tối đa 1 GB) để nhập một thế giới từ máy của bạn.
 - **Tải về chơi local**: xuất server thành gói zip (có thể kèm mod) với hướng dẫn và `start_server.bat` để chơi tiếp trên Windows/macOS.
 - **Đăng nhập**: dùng HTTP Basic Auth.
+
+## Ảnh chụp màn hình
+
+| Danh sách server | Cấu hình |
+|---|---|
+| ![Danh sách server](docs/screenshots/home.png) | ![Cấu hình](docs/screenshots/config.png) |
+| **Mods** | **Thế giới & sao lưu** |
+| ![Mods](docs/screenshots/mods.png) | ![Thế giới](docs/screenshots/world.png) |
 
 ## Yêu cầu
 
