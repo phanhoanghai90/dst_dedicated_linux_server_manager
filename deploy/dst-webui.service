@@ -1,0 +1,16 @@
+[Unit]
+Description=DST Web Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/dst/webui
+ExecStart=/root/dst/webui/.venv/bin/python /root/dst/webui/app.py
+Environment=PORT=8080
+Restart=on-failure
+KillMode=mixed
+OOMPolicy=continue
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

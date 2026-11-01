@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DST Web Panel</title>
+<style>
+  :root {
+    --bg: #1b1814; --panel: #26221c; --panel2: #2f2a22; --border: #433b2f;
+    --text: #ece3d3; --muted: #a59a87; --accent: #d9a441; --ok: #6fbf73; --warn: #e0a03a; --err: #e06a5a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; color: var(--accent); }
+  header h1 a { color: inherit; text-decoration: none; }
+  #crumb { font-size: 16px; font-weight: 600; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav button { background: none; border: 1px solid transparent; color: var(--muted); padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+  nav button.active { color: var(--text); border-color: var(--border); background: var(--panel); }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+  .view, section { display: none; }
+  .view.active, section.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .server { cursor: pointer; margin: 0; transition: border-color .15s; }
+  .server:hover { border-color: var(--accent); }
+  .server h3 { margin: 0 0 6px; font-size: 16px; }
+  .server .meta { color: var(--muted); font-size: 13px; }
+  .toggle { position: relative; width: 44px; height: 24px; flex: none; border-radius: 99px; border: 1px solid var(--border); background: var(--panel2); cursor: pointer; padding: 0; transition: background .15s; }
+  .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+  .toggle.on { background: #2c4a2e; border-color: var(--ok); }
+  .toggle.on::after { transform: translateX(20px); background: var(--ok); }
+  .toggle.pending::after { background: var(--warn); }
+  label { display: block; color: var(--muted); font-size: 13px; }
+  input, select, textarea { width: 100%; margin-top: 4px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 9px; font: inherit; }
+  input[type=checkbox] { width: auto; margin-right: 6px; }
+  textarea { font-family: ui-monospace, monospace; font-size: 13px; min-height: 260px; }
+  .btn { background: var(--panel2); border: 1px solid var(--border); color: var(--text); padding: 7px 14px; border-radius: 6px; cursor: pointer; font: inherit; text-decoration: none; display: inline-block; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #1b1814; border-color: var(--accent); font-weight: 600; }
+  .btn.danger { border-color: var(--err); color: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; background: var(--panel2); }
+  .badge.online { background: #2c4a2e; color: var(--ok); }
+  .badge.starting, .badge.stopping { background: #4a3d22; color: var(--warn); }
+  .badge.offline { color: var(--muted); }
+  .stat { font-size: 22px; font-weight: 600; }
+  .muted { color: var(--muted); }
+  .err { color: var(--err); }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  .log { background: #110f0c; border: 1px solid var(--border); border-radius: 6px; height: 380px; overflow: auto; padding: 8px; font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+  #toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--border); padding: 10px 16px; border-radius: 8px; display: none; max-width: 400px; z-index: 10; }
+  #toast.show { display: block; }
+  #toast.error { border-color: var(--err); color: var(--err); }
+  a { color: var(--accent); }
+  ol li { margin-bottom: 6px; }
+  .modcfg { display: grid; grid-template-columns: minmax(240px, 340px) 1fr; gap: 16px; }
+  @media (max-width: 760px) { .modcfg { grid-template-columns: 1fr; } }
+  .modlist { max-height: 620px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .moditem { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .moditem:last-child { border-bottom: none; }
+  .moditem:hover { background: var(--panel2); }
+  .moditem.selected { background: var(--panel2); box-shadow: inset 3px 0 0 var(--accent); }
+  .moditem .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .moditem.off .name { color: var(--muted); }
+  .moditem .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+  .moddetail { min-width: 0; }
+  .moddetail h3 { margin: 0; font-size: 17px; }
+  .moddesc { white-space: pre-wrap; color: var(--muted); font-size: 13px; max-height: 120px; overflow: auto; margin: 8px 0; padding: 8px; background: var(--panel2); border-radius: 6px; }
+  .modopt { display: grid; grid-template-columns: 1fr minmax(160px, 260px); gap: 4px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
+  .modopt select { margin: 0; }
+  .modopt.changed .optlabel::after { content: " •"; color: var(--accent); }
+  .modopt .hint { grid-column: 1 / -1; margin: 0; }
+  .modhdr { margin: 14px 0 2px; color: var(--accent); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+  @media (max-width: 520px) { .modopt { grid-template-columns: 1fr; } }
+  code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="#/">DST Web Panel</a></h1>
+  <span id="crumb"></span>
+  <nav id="nav" style="display:none">
+    <button data-tab="dashboard" class="active">Bảng điều khiển</button>
+    <button data-tab="cluster">Cấu hình</button>
+    <button data-tab="token">Token</button>
+    <button data-tab="mods">Mods</button>
+    <button data-tab="world">Thế giới</button>
+    <button data-tab="lists">Admin / Chặn</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============================== HOME ============================== -->
+  <div id="home" class="view active">
+    <div id="homeWarn" class="card" style="display:none"></div>
+
+    <div class="row" style="justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin:0;font-size:18px">Danh sách server</h2>
+      <span class="muted" id="memInfo"></span>
+    </div>
+    <div class="servers" id="serverList"></div>
+
+    <div class="grid">
+      <form class="card" id="createForm">
+        <h2>Tạo server mới</h2>
+        <label>Tên server<input id="newName" required maxlength="60" placeholder="Ví dụ: Server bạn bè"></label>
+        <label style="display:flex;align-items:center;margin-top:10px"><input type="checkbox" id="newCopyToken" checked>Dùng cluster token của server đã có</label>
+        <p class="hint">Server mới được tự cấp port riêng. Sau khi tạo, vào server để cấu hình chi tiết hoặc upload thế giới.</p>
+        <button class="btn primary" style="margin-top:8px">Tạo server</button>
+      </form>
+
+      <div class="card">
+        <h2>Game server (dùng chung)</h2>
+        <p>Trạng thái: <b id="installState">-</b></p>
+        <p class="hint">Cài hoặc cập nhật DST Dedicated Server qua steamcmd. Khi game có bản cập nhật mới, người chơi không vào được cho tới khi bạn cập nhật. Phải tắt tất cả server trước.</p>
+        <button class="btn primary" id="btnInstall">Cài đặt / Cập nhật</button>
+        <button class="btn" id="btnShowInstallLog">Xem log</button>
+      </div>
+    </div>
+    <div class="card" id="installLogCard" style="display:none">
+      <div class="log" id="installLog" style="height:300px"></div>
+    </div>
+  </div>
+
+  <!-- ============================== SERVER ============================== -->
+  <div id="server" class="view">
+    <!-- Dashboard -->
+    <section id="dashboard" class="active">
+      <div id="setupWarn" class="card" style="display:none"></div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <span>Master: <span id="stMaster" class="badge">-</span></span>
+            <span id="cavesWrap">Caves: <span id="stCaves" class="badge">-</span></span>
+            <span class="row" style="gap:6px" title="Tắt Caves tiết kiệm khoảng 1–1.5 GB RAM">Bật Caves <button class="toggle" id="cavesToggle"></button></span>
+            <span class="muted" id="portInfo"></span>
+          </div>
+          <div class="row">
+            <button class="btn primary" id="btnStart">Khởi động</button>
+            <button class="btn" id="btnRestart">Khởi động lại</button>
+            <button class="btn danger" id="btnStop">Tắt</button>
+          </div>
+        </div>
+        <p id="shardErrors" class="err"></p>
+      </div>
+
+      <div class="grid">
+        <div class="card"><div class="muted">Người chơi</div><div class="stat" id="sPlayers">-</div><div class="muted" id="sPlayerNames"></div></div>
+        <div class="card"><div class="muted">Ngày</div><div class="stat" id="sDay">-</div><div class="muted" id="sPhase"></div></div>
+        <div class="card"><div class="muted">Mùa</div><div class="stat" id="sSeason">-</div></div>
+        <div class="card"><div class="muted">RAM</div><div class="stat" id="sMem">-</div></div>
+      </div>
+
+      <div class="card">
+        <h2>Thao tác thế giới</h2>
+        <div class="row">
+          <button class="btn" data-action="save">Lưu (c_save)</button>
+          <span class="row">Rollback <input id="rollbackN" type="number" min="1" max="10" value="1" style="width:70px"> bản lưu
+            <button class="btn" data-action="rollback">Rollback</button></span>
+          <button class="btn danger" data-action="regenerate">Tạo lại thế giới</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input id="announceText" placeholder="Thông báo tới người chơi..." style="flex:1">
+          <button class="btn" data-action="announce">Gửi thông báo</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <div class="row">
+            <button class="btn" data-log="Master">Log Master</button>
+            <button class="btn" data-log="Caves">Log Caves</button>
+          </div>
+          <label style="display:flex;align-items:center"><input type="checkbox" id="autoscroll" checked>Tự cuộn</label>
+        </div>
+        <div class="log" id="logBox"></div>
+        <form class="row" id="consoleForm" style="margin-top:8px">
+          <input id="consoleInput" placeholder="Lệnh console Lua, ví dụ: c_listallplayers()" style="flex:1" autocomplete="off">
+          <button class="btn">Gửi</button>
+        </form>
+        <p class="hint">Lệnh được gửi tới shard đang xem log. Một số lệnh hay dùng: <code>c_listallplayers()</code>, <code>c_skip(1)</code>, <code>TheNet:Kick("KU_...")</code>, <code>TheWorld:PushEvent("ms_setseason","winter")</code>.</p>
+      </div>
+    </section>
+
+    <!-- Cluster -->
+    <section id="cluster">
+      <form class="card" id="clusterForm">
+        <h2>Cấu hình server (cluster.ini)</h2>
+        <div class="grid">
+          <label>Tên server<input name="cluster_name" required></label>
+          <label>Mật khẩu (để trống nếu không cần)<input name="cluster_password"></label>
+          <label>Số người tối đa<input name="max_players" type="number" min="1" max="64"></label>
+          <label>Chế độ chơi
+            <select name="game_mode">
+              <option value="survival">Survival</option>
+              <option value="endless">Endless</option>
+              <option value="wilderness">Wilderness</option>
+            </select></label>
+          <label>Phong cách
+            <select name="cluster_intention">
+              <option value="cooperative">Cooperative</option>
+              <option value="social">Social</option>
+              <option value="competitive">Competitive</option>
+              <option value="madness">Madness</option>
+            </select></label>
+          <label>Ngôn ngữ<input name="cluster_language" placeholder="en"></label>
+          <label>Số bản lưu giữ lại (max_snapshots)<input name="max_snapshots" type="number" min="1" max="20"></label>
+          <label>Port UDP Master<input name="master_port" type="number"></label>
+          <label>Port UDP Caves<input name="caves_port" type="number"></label>
+        </div>
+        <label style="margin-top:12px">Mô tả<input name="cluster_description"></label>
+        <div class="row" style="margin-top:12px">
+          <label style="display:flex;align-items:center"><input type="checkbox" name="pvp">Bật PvP</label>
+          <label style="display:flex;align-items:center"><input type="checkbox" name="pause_when_empty">Tạm dừng khi không có ai</label>
+          <label style="display:flex;align-items:center"><input type="checkbox" name="caves_enabled">Bật Caves (hang động)</label>
+        </div>
+        <p class="hint">Khởi động lại server sau khi lưu để áp dụng. Nhớ mở các port UDP ở firewall của nhà cung cấp VPS.</p>
+        <button class="btn primary" style="margin-top:8px">Lưu</button>
+      </form>
+
+      <div class="card" style="border-color:var(--err)">
+        <h2 class="err">Xoá server</h2>
+        <p class="hint">Server phải đang tắt. Thế giới được sao lưu lần cuối vào <code>/root/dst/data/backups/&lt;tên&gt;</code> trước khi xoá.</p>
+        <button class="btn danger" id="btnDelete" style="margin-top:8px">Xoá server này</button>
+      </div>
+    </section>
+
+    <!-- Token -->
+    <section id="token">
+      <div class="card">
+        <h2>Cluster Token</h2>
+        <p>Trạng thái: <b id="tokenState">-</b></p>
+        <ol>
+          <li>Mở <a href="https://accounts.klei.com/account/game/servers?game=DontStarveTogether" target="_blank" rel="noopener">Klei Accounts → Game Servers</a> và đăng nhập (bằng tài khoản Steam sở hữu DST).</li>
+          <li>Đặt tên rồi bấm <b>Add New Server</b>.</li>
+          <li>Copy chuỗi token (dạng <code>pds-g^KU_...</code>) rồi dán vào ô bên dưới.</li>
+        </ol>
+        <form class="row" id="tokenForm">
+          <input id="tokenInput" placeholder="pds-g^KU_xxxxxxx^..." style="flex:1" autocomplete="off">
+          <button class="btn primary">Lưu token</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Mods -->
+    <section id="mods">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:10px">
+          <h2 style="margin:0">Mod của server</h2>
+          <div class="row">
+            <button class="btn" id="btnDownloadMods" title="Tải/cập nhật mod trong danh sách bằng steamcmd để đọc được tuỳ chọn cấu hình">Tải mod về</button>
+            <button class="btn primary" id="btnSaveModConfig" disabled>Lưu thay đổi</button>
+          </div>
+        </div>
+        <p id="modConfigError" class="err" style="display:none"></p>
+        <div class="modcfg">
+          <div>
+            <div class="row" style="margin-bottom:8px">
+              <input id="modSearch" placeholder="Tìm mod..." style="flex:1;margin:0">
+              <select id="modFilter" style="width:auto;margin:0">
+                <option value="all">Tất cả</option>
+                <option value="on">Đang bật</option>
+                <option value="off">Đang tắt</option>
+              </select>
+            </div>
+            <div class="modlist" id="modList"></div>
+          </div>
+          <div class="moddetail" id="modDetail"><p class="muted">Chọn một mod để xem và chỉnh tuỳ chọn.</p></div>
+        </div>
+        <p class="hint">Giống màn hình Mods trong game: bật/tắt mod và chỉnh tuỳ chọn, rồi bấm <b>Lưu thay đổi</b> (ghi vào <code>modoverrides.lua</code>, dùng chung cho Master và Caves). Khởi động lại server để áp dụng.</p>
+      </div>
+
+      <div class="card">
+        <h2>Danh sách mod Workshop (để server tải về)</h2>
+        <p class="hint">Mỗi dòng một ID hoặc link Steam Workshop. Thêm mod mới ở đây, lưu, rồi bấm <b>Tải mod về</b> để cấu hình được ngay ở bảng trên.</p>
+        <textarea id="modsList" style="min-height:140px"></textarea>
+        <button class="btn primary" id="btnSaveMods" style="margin-top:8px">Lưu danh sách</button>
+      </div>
+
+      <details class="card">
+        <summary style="cursor:pointer;font-weight:600">Nâng cao: sửa tay modoverrides.lua</summary>
+        <p class="hint">Mod chỉ chạy khi có <code>["workshop-ID"] = { enabled = true }</code> ở đây. Nếu có thay đổi chưa lưu ở bảng trên, hãy lưu trước khi sửa tay.</p>
+        <textarea id="f_modoverrides"></textarea>
+        <button class="btn primary" data-save="modoverrides" style="margin-top:8px">Lưu modoverrides</button>
+      </details>
+    </section>
+
+    <!-- World -->
+    <section id="world">
+      <div class="card">
+        <h2>Upload thế giới từ máy của bạn</h2>
+        <ol>
+          <li>Trên máy tính, mở thư mục save của DST:<br>
+            Windows: <code>Documents\Klei\DoNotStarveTogether\&lt;dãy số&gt;\Cluster_N</code><br>
+            macOS: <code>~/Documents/Klei/DoNotStarveTogether/&lt;dãy số&gt;/Cluster_N</code><br>
+            (<code>Cluster_N</code> ứng với ô thế giới thứ N trong game; mở <code>cluster.ini</code> để xem tên.)</li>
+          <li>Nén <b>cả thư mục</b> <code>Cluster_N</code> thành file <code>.zip</code>.</li>
+          <li><b>Tắt server</b>, rồi chọn file và bấm Upload. Thế giới hiện tại sẽ được tự động sao lưu trước.</li>
+        </ol>
+        <form id="uploadForm">
+          <input type="file" id="worldFile" accept=".zip" required>
+          <label style="display:flex;align-items:center;margin-top:8px"><input type="checkbox" id="useClusterIni">Dùng luôn cấu hình (tên, mật khẩu, chế độ chơi...) trong file upload</label>
+          <p class="hint">Token và port của server luôn được giữ nguyên. Mod trong <code>modoverrides.lua</code> của thế giới sẽ được tự thêm vào danh sách tải.</p>
+          <div class="row" style="margin-top:8px">
+            <button class="btn primary" id="btnUpload">Upload</button>
+            <progress id="uploadProgress" value="0" max="100" style="display:none;flex:1"></progress>
+            <span id="uploadPct" class="muted"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Tải về chơi local</h2>
+        <p class="hint">Tải thế giới hiện tại kèm hướng dẫn (<code>README.txt</code>), danh sách mod và script chạy server trên Windows. Có thể chơi bằng <b>Host Game</b> trong game hoặc chạy dedicated server trên máy mình. Nếu server đang chạy, thế giới sẽ được lưu (c_save) trước khi đóng gói.</p>
+        <label style="display:flex;align-items:center"><input type="checkbox" id="exportMods">Kèm file mod (nặng, vài trăm MB, không cần nếu đã subscribe mod trên Workshop)</label>
+        <div class="row" style="margin-top:8px">
+          <button class="btn primary" id="btnExportLocal">Tải về</button>
+          <span class="muted" id="exportState"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">Bản sao lưu</h2>
+          <button class="btn" id="btnBackup">Sao lưu ngay</button>
+        </div>
+        <p class="hint">Giữ tối đa 20 bản gần nhất. Tải bản sao lưu về để chơi tiếp ở máy local: giải nén và chép thư mục bên trong vào thư mục save của DST.</p>
+        <div id="backupList" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Thế giới mặt đất (Master/worldgenoverride.lua)</h2>
+        <p class="hint">Chỉ có hiệu lực khi tạo thế giới mới (lần đầu chạy hoặc sau khi "Tạo lại thế giới"). Ví dụ overrides: <code>day = "longday"</code>, <code>season_start = "spring"</code>, <code>world_size = "huge"</code>.</p>
+        <textarea id="f_master_leveldata"></textarea>
+        <button class="btn primary" data-save="master_leveldata" style="margin-top:8px">Lưu</button>
+      </div>
+      <div class="card">
+        <h2>Hang động (Caves/worldgenoverride.lua)</h2>
+        <textarea id="f_caves_worldgen" style="min-height:160px"></textarea>
+        <button class="btn primary" data-save="caves_worldgen" style="margin-top:8px">Lưu</button>
+      </div>
+    </section>
+
+    <!-- Lists -->
+    <section id="lists">
+      <div class="grid">
+        <div class="card">
+          <h2>Admin (adminlist.txt)</h2>
+          <p class="hint">Mỗi dòng một Klei ID dạng <code>KU_xxxxxxxx</code>.</p>
+          <textarea id="f_adminlist" style="min-height:160px"></textarea>
+          <button class="btn primary" data-save="adminlist" style="margin-top:8px">Lưu</button>
+        </div>
+        <div class="card">
+          <h2>Chặn (blocklist.txt)</h2>
+          <p class="hint">&nbsp;</p>
+          <textarea id="f_blocklist" style="min-height:160px"></textarea>
+          <button class="btn primary" data-save="blocklist" style="margin-top:8px">Lưu</button>
+        </div>
+        <div class="card">
+          <h2>Giữ chỗ (whitelist.txt)</h2>
+          <p class="hint">Những người luôn có chỗ, kể cả khi server đầy.</p>
+          <textarea id="f_whitelist" style="min-height:160px"></textarea>
+          <button class="btn primary" data-save="whitelist" style="margin-top:8px">Lưu</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || res.statusText);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+let toastTimer;
+function toast(msg, isError) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = "show" + (isError ? " error" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (el.className = ""), 4000);
+}
+
+async function run(fn, okMsg) {
+  try { await fn(); if (okMsg) toast(okMsg); }
+  catch (e) { toast(e.message, true); }
+}
+
+const STATUS_TEXT = { online: "Online", starting: "Đang khởi động", stopping: "Đang tắt", offline: "Offline" };
+const SEASON_TEXT = { autumn: "Thu", winter: "Đông", spring: "Xuân", summer: "Hạ" };
+const PHASE_TEXT = { day: "Ban ngày", dusk: "Chạng vạng", night: "Ban đêm" };
+const MODE_TEXT = { survival: "Survival", endless: "Endless", wilderness: "Wilderness" };
+
+const badge = (status) => `<span class="badge ${status}">${STATUS_TEXT[status] || status}</span>`;
+function setBadge(el, status) {
+  el.textContent = STATUS_TEXT[status] || status;
+  el.className = "badge " + status;
+}
+
+// ============================== Routing ============================== //
+let cid = null;  // server đang mở
+const C = () => `/api/clusters/${encodeURIComponent(cid)}`;
+
+function route() {
+  const m = location.hash.match(/^#\/s\/([^/]+)(?:\/(\w+))?/);
+  cid = m ? decodeURIComponent(m[1]) : null;
+
+  $("#home").classList.toggle("active", !cid);
+  $("#server").classList.toggle("active", !!cid);
+  $("#nav").style.display = cid ? "" : "none";
+
+  if (!cid) {
+    $("#crumb").textContent = "";
+    refreshHome();
+    return;
+  }
+
+  showTab(m[2] || "dashboard");
+  selectLog("Master");
+  refreshServer();
+}
+window.addEventListener("hashchange", route);
+
+// ============================== Home ============================== //
+async function refreshHome() {
+  let st;
+  try { st = await api("GET", "/api/status"); } catch { return; }
+
+  const usedMem = st.clusters.reduce((sum, c) => sum + (c.shards.Master.memory_mb || 0) + (c.shards.Caves.memory_mb || 0), 0);
+  $("#memInfo").textContent = `RAM máy: còn trống ${st.memory.available_mb} / ${st.memory.total_mb} MB` + (usedMem ? ` · các server đang dùng ${usedMem} MB` : "");
+
+  $("#serverList").innerHTML = st.clusters.length ? st.clusters.map((c) => {
+    const m = c.shards.Master, cv = c.shards.Caves;
+    const online = m.status === "online" && c.stats;
+    const err = m.error || cv.error;
+    const on = c.busy || m.status !== "offline" || cv.status !== "offline";
+    const pending = c.busy || m.status === "starting" || m.status === "stopping";
+    return `
+      <a class="card server" href="#/s/${encodeURIComponent(c.id)}" style="text-decoration:none;color:inherit">
+        <div class="row" style="justify-content:space-between;align-items:flex-start">
+          <h3>${esc(c.name)}</h3>
+          <div class="row">${badge(m.status)}
+            <button class="toggle${on ? " on" : ""}${pending ? " pending" : ""}" data-toggle="${esc(c.id)}" data-on="${on}" data-name="${esc(c.name)}"
+              title="${on ? "Tắt server" : "Bật server (các server khác sẽ tắt)"}" ${c.busy || m.status === "stopping" ? "disabled" : ""}></button>
+          </div>
+        </div>
+        <div class="meta">${MODE_TEXT[c.game_mode] || esc(c.game_mode)} · tối đa ${esc(c.max_players)} người${c.has_password ? " · có mật khẩu" : ""}${c.caves_enabled ? " · có Caves" : ""}${c.mods_count ? ` · ${c.mods_count} mod` : ""}</div>
+        <div class="meta">Port ${c.ports.Master}${c.caves_enabled ? " / " + c.ports.Caves : ""} · thư mục <code>${esc(c.id)}</code></div>
+        ${online ? `<div style="margin-top:8px">👥 ${c.stats.players.length}/${c.stats.max} · Ngày ${c.stats.day} · ${SEASON_TEXT[c.stats.season] || c.stats.season}</div>` : ""}
+        ${!c.token_set ? '<div class="err" style="margin-top:8px">Chưa có token</div>' : ""}
+        ${err ? `<div class="err" style="margin-top:8px">${esc(err)}</div>` : ""}
+      </a>`;
+  }).join("") : '<div class="card muted">Chưa có server nào. Tạo server đầu tiên bên dưới.</div>';
+  homeClusters = st.clusters;
+
+  const running = st.clusters.filter((c) => c.shards.Master.status !== "offline").length;
+  const warns = [];
+  if (!st.installed) warns.push("Chưa cài game server, bấm <b>Cài đặt / Cập nhật</b> bên dưới.");
+  if (running > 1) warns.push(`Đang chạy ${running} server cùng lúc, chú ý RAM (mỗi server có Caves cần khoảng 1–1.5 GB).`);
+  $("#homeWarn").style.display = warns.length ? "" : "none";
+  $("#homeWarn").innerHTML = warns.map((w) => "<div>• " + w + "</div>").join("");
+
+  $("#installState").textContent = st.installing ? "Đang cài..." : st.installed ? `Đã cài (build ${st.build || "?"})` : "Chưa cài";
+  $("#btnInstall").disabled = st.installing;
+  if (st.installing) $("#installLogCard").style.display = "";
+}
+
+// Nút gạt bật/tắt: chỉ một server chạy tại một thời điểm.
+let homeClusters = [];
+$("#serverList").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-toggle]");
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const id = btn.dataset.toggle, name = btn.dataset.name;
+  const url = `/api/clusters/${encodeURIComponent(id)}`;
+
+  if (btn.dataset.on === "true") {
+    if (!confirm(`Tắt server "${name}"? (thế giới sẽ được lưu)`)) return;
+    run(() => api("POST", url + "/stop"), `Đang tắt "${name}"...`).then(refreshHome);
+    return;
+  }
+
+  const others = homeClusters.filter((c) => c.id !== id && (c.busy || c.shards.Master.status !== "offline" || c.shards.Caves.status !== "offline"));
+  if (others.length && !confirm(`Bật "${name}" sẽ tắt: ${others.map((c) => `"${c.name}"`).join(", ")}. Tiếp tục?`)) return;
+  run(() => api("POST", url + "/switch-on"), `Đang bật "${name}"...`).then(refreshHome);
+});
+
+$("#createForm").onsubmit = (e) => {
+  e.preventDefault();
+  run(async () => {
+    const c = await api("POST", "/api/clusters", { name: $("#newName").value, copy_token: $("#newCopyToken").checked });
+    $("#newName").value = "";
+    location.hash = `#/s/${encodeURIComponent(c.id)}/cluster`;
+  }, "Đã tạo server");
+};
+
+const installState = { after: 0 };
+$("#btnInstall").onclick = () => run(async () => {
+  installState.after = 0;
+  $("#installLog").textContent = "";
+  $("#installLogCard").style.display = "";
+  await api("POST", "/api/install");
+  refreshHome();
+}, "Bắt đầu cài đặt...");
+$("#btnShowInstallLog").onclick = () => {
+  const card = $("#installLogCard");
+  card.style.display = card.style.display ? "" : "none";
+};
+
+// ============================== Server ============================== //
+const loaders = {};
+
+function showTab(tab) {
+  $$("#nav button").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
+  $$("#server section").forEach((s) => s.classList.toggle("active", s.id === tab));
+  loaders[tab]?.();
+}
+$$("#nav button").forEach((b) => b.addEventListener("click", () => {
+  history.replaceState(null, "", `#/s/${encodeURIComponent(cid)}/${b.dataset.tab}`);
+  showTab(b.dataset.tab);
+}));
+
+async function refreshServer() {
+  if (!cid) return;
+  let st;
+  try { st = await api("GET", C()); }
+  catch (e) { toast(e.message, true); location.hash = "#/"; return; }
+
+  $("#crumb").innerHTML = `› ${esc(st.name)}`;
+
+  const m = st.shards.Master, c = st.shards.Caves;
+  setBadge($("#stMaster"), m.status);
+  setBadge($("#stCaves"), c.status);
+  $("#cavesWrap").style.display = st.caves_enabled || c.status !== "offline" ? "" : "none";
+  const ct = $("#cavesToggle");
+  ct.classList.toggle("on", st.caves_enabled);
+  ct.classList.toggle("pending", st.busy || ["starting", "stopping"].includes(c.status));
+  ct.disabled = st.busy || m.status === "stopping";
+  ct.title = st.caves_enabled ? "Tắt Caves" : "Bật Caves";
+  $("#portInfo").textContent = `· port ${st.ports.Master}${st.caves_enabled ? " / " + st.ports.Caves : ""}`;
+
+  const running = [m, c].some((s) => s.status !== "offline");
+  $("#btnStart").disabled = running || st.busy;
+  $("#btnStop").disabled = !running || st.busy;
+  $("#btnRestart").disabled = !running || st.busy;
+
+  $("#shardErrors").textContent = [m.error && "Master: " + m.error, c.error && "Caves: " + c.error].filter(Boolean).join("  ·  ");
+
+  const s = m.status === "online" ? st.stats : null;
+  $("#sPlayers").textContent = s ? `${s.players.length} / ${s.max}` : "-";
+  $("#sPlayerNames").textContent = s ? s.players.join(", ") : "";
+  $("#sDay").textContent = s ? s.day : "-";
+  $("#sPhase").textContent = s ? PHASE_TEXT[s.phase] || s.phase : "";
+  $("#sSeason").textContent = s ? SEASON_TEXT[s.season] || s.season : "-";
+  const mem = (m.memory_mb || 0) + (c.memory_mb || 0);
+  $("#sMem").textContent = mem ? mem + " MB" : "-";
+
+  checkModDownload(st.busy);
+
+  $("#setupWarn").style.display = st.token_set ? "none" : "";
+  $("#setupWarn").innerHTML = "<h2>Cần hoàn tất thiết lập</h2><div>• Chưa có cluster token → tab <b>Token</b>.</div>";
+  $("#tokenState").textContent = st.token_set ? "Đã có token" : "Chưa có token";
+}
+
+$("#cavesToggle").onclick = () => {
+  const enabled = !$("#cavesToggle").classList.contains("on");
+  const running = $("#stMaster").classList.contains("online") || $("#stMaster").classList.contains("starting");
+  if (running && !confirm(enabled ? "Bật Caves ngay bây giờ?" : "Tắt Caves ngay? Người chơi đang ở hang sẽ bị đưa lên mặt đất.")) return;
+  run(() => api("POST", C() + "/caves", { enabled }), enabled ? "Đang bật Caves..." : "Đang tắt Caves...").then(refreshServer);
+};
+
+$("#btnStart").onclick = () => run(() => api("POST", C() + "/start"), "Đang khởi động server...").then(refreshServer);
+$("#btnStop").onclick = () => confirm("Tắt server? (thế giới sẽ được lưu)") && run(() => api("POST", C() + "/stop"), "Đang tắt server...").then(refreshServer);
+$("#btnRestart").onclick = () => run(() => api("POST", C() + "/restart"), "Đang khởi động lại...").then(refreshServer);
+
+$$("[data-action]").forEach((b) => b.addEventListener("click", () => {
+  const action = b.dataset.action;
+  let value = null;
+  if (action === "rollback") {
+    value = +$("#rollbackN").value || 1;
+    if (!confirm(`Rollback ${value} bản lưu?`)) return;
+  }
+  if (action === "regenerate" && !confirm("Xoá thế giới hiện tại và tạo thế giới mới? Không thể hoàn tác!")) return;
+  if (action === "announce") {
+    value = $("#announceText").value.trim();
+    if (!value) return;
+    $("#announceText").value = "";
+  }
+  run(() => api("POST", C() + "/action", { action, value }), "Đã gửi lệnh");
+}));
+
+// ---- Logs ----
+const logState = { shard: "Master", after: 0 };
+
+function selectLog(shard) {
+  logState.shard = shard;
+  logState.after = 0;
+  $("#logBox").textContent = "";
+  $$("[data-log]").forEach((b) => b.classList.toggle("primary", b.dataset.log === shard));
+}
+$$("[data-log]").forEach((b) => b.addEventListener("click", () => selectLog(b.dataset.log)));
+
+async function pollLog(box, url, state) {
+  try {
+    const data = await api("GET", `${url}?after=${state.after}`);
+    if (data.seq < state.after) { state.after = 0; box.textContent = ""; return; }
+    if (data.lines.length) {
+      box.append(data.lines.map((l) => l.text).join("\n") + "\n");
+      state.after = data.seq;
+      if (box.childNodes.length > 400) box.textContent = box.textContent.split("\n").slice(-3000).join("\n");
+      if (box.id !== "logBox" || $("#autoscroll").checked) box.scrollTop = box.scrollHeight;
+    }
+  } catch {}
+}
+
+$("#consoleForm").onsubmit = (e) => {
+  e.preventDefault();
+  const command = $("#consoleInput").value.trim();
+  if (!command) return;
+  run(() => api("POST", C() + "/console", { shard: logState.shard, command }));
+  $("#consoleInput").value = "";
+};
+
+// ---- Cluster ----
+loaders.cluster = () => run(async () => {
+  const data = await api("GET", C() + "/settings");
+  const form = $("#clusterForm");
+  for (const [k, v] of Object.entries(data)) {
+    const el = form.elements[k];
+    if (!el) continue;
+    if (el.type === "checkbox") el.checked = !!v; else el.value = v;
+  }
+});
+
+$("#clusterForm").onsubmit = (e) => {
+  e.preventDefault();
+  const form = e.target, body = {};
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    body[el.name] = el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value;
+  }
+  run(async () => { await api("PUT", C() + "/settings", body); refreshServer(); }, "Đã lưu. Khởi động lại server để áp dụng.");
+};
+
+$("#btnDelete").onclick = () => {
+  const name = $("#clusterForm").elements.cluster_name.value;
+  if (prompt(`Gõ "XOA" để xoá server "${name}":`) !== "XOA") return;
+  run(async () => {
+    const res = await api("DELETE", C());
+    location.hash = "#/";
+    toast(`Đã xoá. Bản sao lưu cuối: ${res.backup}`);
+  });
+};
+
+// ---- Token ----
+loaders.token = () => run(async () => {
+  const t = await api("GET", C() + "/token");
+  $("#tokenState").textContent = t.set ? `Đã có token (${t.preview})` : "Chưa có token";
+});
+
+$("#tokenForm").onsubmit = (e) => {
+  e.preventDefault();
+  run(async () => {
+    await api("PUT", C() + "/token", { token: $("#tokenInput").value });
+    $("#tokenInput").value = "";
+    loaders.token();
+    refreshServer();
+  }, "Đã lưu token");
+};
+
+// ---- Files ----
+async function loadFile(name) {
+  const data = await api("GET", `${C()}/files/${name}`);
+  $("#f_" + name).value = data.content;
+}
+
+$$("[data-save]").forEach((b) => b.addEventListener("click", () => {
+  const name = b.dataset.save;
+  run(async () => {
+    await api("PUT", `${C()}/files/${name}`, { content: $("#f_" + name).value });
+    if (name === "modoverrides") await loadModConfig();
+  }, "Đã lưu");
+}));
+
+loaders.lists = () => run(() => Promise.all(["adminlist", "blocklist", "whitelist"].map(loadFile)));
+
+// ---- Mods ----
+// mods: dữ liệu từ server; edits: thay đổi chưa lưu, theo folder → { enabled, config }.
+const modState = { mods: [], edits: {}, selected: null, broken: false, downloading: false };
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const modByFolder = (folder) => modState.mods.find((m) => m.folder === folder);
+const modEnabled = (m) => modState.edits[m.folder]?.enabled ?? m.enabled;
+
+function optionValue(m, opt) {
+  const edited = modState.edits[m.folder]?.config;
+  if (edited && opt.name in edited) return edited[opt.name];
+  return opt.name in m.config ? m.config[opt.name] : opt.default;
+}
+
+function modEdit(m) {
+  return (modState.edits[m.folder] ??= { enabled: m.enabled, config: {} });
+}
+
+async function loadModConfig(keepEdits) {
+  const data = await api("GET", C() + "/modconfig");
+  modState.mods = data.mods;
+  if (!keepEdits) modState.edits = {};
+  for (const folder in modState.edits) if (!modByFolder(folder)) delete modState.edits[folder];
+  modState.broken = !!data.error;
+  $("#modConfigError").style.display = data.error ? "" : "none";
+  $("#modConfigError").textContent = data.error ? data.error + " — sửa ở mục Nâng cao bên dưới." : "";
+  if (!modByFolder(modState.selected)) modState.selected = data.mods[0]?.folder ?? null;
+  renderModList();
+  renderModDetail();
+}
+
+function updateSaveButton() {
+  const n = Object.keys(modState.edits).length;
+  $("#btnSaveModConfig").disabled = !n || modState.broken;
+  $("#btnSaveModConfig").textContent = n ? `Lưu thay đổi (${n} mod)` : "Lưu thay đổi";
+}
+
+function renderModList() {
+  const q = $("#modSearch").value.trim().toLowerCase();
+  const filter = $("#modFilter").value;
+  const mods = modState.mods
+    .filter((m) => !q || m.name.toLowerCase().includes(q) || m.folder.includes(q))
+    .filter((m) => filter === "all" || (filter === "on") === modEnabled(m))
+    .sort((a, b) => modEnabled(b) - modEnabled(a) || a.name.localeCompare(b.name));
+
+  $("#modList").innerHTML = mods.length ? mods.map((m) => `
+    <div class="moditem${modEnabled(m) ? "" : " off"}${m.folder === modState.selected ? " selected" : ""}" data-mod="${esc(m.folder)}">
+      ${modState.edits[m.folder] ? '<span class="dot" title="Chưa lưu"></span>' : ""}
+      <span class="name" title="${esc(m.name)}">${esc(m.name)}</span>
+      ${!m.installed ? '<span class="badge" title="Chưa tải về máy chủ, bấm Tải mod về để cấu hình">chưa tải</span>' : ""}
+      <button class="toggle${modEnabled(m) ? " on" : ""}" data-mod-toggle="${esc(m.folder)}" title="${modEnabled(m) ? "Tắt mod" : "Bật mod"}"></button>
+    </div>`).join("") : '<p class="muted" style="padding:10px;margin:0">Không có mod nào.</p>';
+  updateSaveButton();
+}
+
+function renderModDetail() {
+  const m = modByFolder(modState.selected);
+  const box = $("#modDetail");
+  if (!m) { box.innerHTML = '<p class="muted">Chưa có mod nào. Thêm ID mod ở danh sách bên dưới.</p>'; return; }
+
+  const workshop = m.workshop_id ? `<a href="https://steamcommunity.com/sharedfiles/filedetails/?id=${m.workshop_id}" target="_blank" rel="noopener">Workshop</a>` : "";
+  const meta = [m.author && "Tác giả: " + esc(m.author), m.version && "Phiên bản " + esc(m.version), esc(m.folder), workshop].filter(Boolean).join(" · ");
+  const tags = [m.client_only && "Chỉ client", m.all_clients_require && "Người chơi cần tải"].filter(Boolean)
+    .map((t) => `<span class="badge">${t}</span>`).join(" ");
+
+  let options = "";
+  if (!m.installed) {
+    options = '<p class="muted">Mod chưa được tải về máy chủ nên chưa đọc được tuỳ chọn. Bấm <b>Tải mod về</b> ở trên (hoặc khởi động server một lần).</p>';
+  } else if (m.error) {
+    options = `<p class="err">Không đọc được modinfo.lua: ${esc(m.error)}</p>`;
+  } else if (!m.options.some((o) => !o.header && o.name)) {
+    options = '<p class="muted">Mod này không có tuỳ chọn cấu hình.</p>';
+  } else {
+    options = m.options.map((opt, i) => {
+      if (opt.header) return opt.label ? `<div class="modhdr">${esc(opt.label)}</div>` : "";
+      if (!opt.name || opt.client) return "";
+      const value = optionValue(m, opt);
+      let idx = opt.options.findIndex((c) => same(c.data, value));
+      const extra = idx < 0 ? `<option value="-1" selected>Giá trị hiện tại: ${esc(JSON.stringify(value))}</option>` : "";
+      const choice = opt.options[idx];
+      return `
+        <div class="modopt${same(value, opt.default) ? "" : " changed"}">
+          <span class="optlabel" title="${esc(opt.hover)}">${esc(opt.label)}</span>
+          <select data-opt="${i}" title="${esc(choice?.hover || "")}">${extra}${opt.options.map((c, j) =>
+            `<option value="${j}"${j === idx ? " selected" : ""}>${esc(c.description)}${same(c.data, opt.default) ? " (mặc định)" : ""}</option>`).join("")}</select>
+          ${opt.hover || choice?.hover ? `<p class="hint">${esc([opt.hover, choice?.hover].filter(Boolean).join(" — "))}</p>` : ""}
+        </div>`;
+    }).join("");
+  }
+
+  const hasOptions = m.installed && m.options.some((o) => !o.header && o.name && !o.client);
+  box.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div style="min-width:0"><h3>${esc(m.name)}</h3><div class="muted" style="font-size:13px">${meta}</div></div>
+      <label class="row" style="color:var(--text)">${modEnabled(m) ? "Đang bật" : "Đang tắt"}
+        <button class="toggle${modEnabled(m) ? " on" : ""}" data-mod-toggle="${esc(m.folder)}"></button></label>
+    </div>
+    ${tags ? `<div style="margin-top:6px">${tags}</div>` : ""}
+    ${m.description ? `<div class="moddesc">${esc(m.description)}</div>` : ""}
+    ${hasOptions ? `<div class="row" style="justify-content:space-between;margin:12px 0 4px"><b>Tuỳ chọn</b>
+      <button class="btn" id="btnModDefaults">Đặt lại mặc định</button></div>` : ""}
+    ${options}`;
+}
+
+function toggleMod(folder) {
+  const m = modByFolder(folder);
+  const edit = modEdit(m);
+  edit.enabled = !modEnabled(m);
+  if (edit.enabled === m.enabled && !Object.keys(edit.config).length) delete modState.edits[folder];
+  renderModList();
+  if (folder === modState.selected) renderModDetail();
+}
+
+$("#modList").addEventListener("click", (e) => {
+  const toggle = e.target.closest("[data-mod-toggle]");
+  if (toggle) return toggleMod(toggle.dataset.modToggle);
+  const item = e.target.closest("[data-mod]");
+  if (!item) return;
+  modState.selected = item.dataset.mod;
+  renderModList();
+  renderModDetail();
+});
+
+$("#modDetail").addEventListener("click", (e) => {
+  const toggle = e.target.closest("[data-mod-toggle]");
+  if (toggle) return toggleMod(toggle.dataset.modToggle);
+  if (e.target.id !== "btnModDefaults") return;
+  const m = modByFolder(modState.selected);
+  const edit = modEdit(m);
+  for (const opt of m.options) if (opt.name && !opt.header && !opt.client) edit.config[opt.name] = opt.default;
+  renderModList();
+  renderModDetail();
+});
+
+$("#modDetail").addEventListener("change", (e) => {
+  const sel = e.target.closest("[data-opt]");
+  if (!sel || sel.value === "-1") return;
+  const m = modByFolder(modState.selected);
+  const opt = m.options[+sel.dataset.opt];
+  modEdit(m).config[opt.name] = opt.options[+sel.value].data;
+  renderModList();
+  renderModDetail();
+});
+
+$("#modSearch").addEventListener("input", renderModList);
+$("#modFilter").addEventListener("change", renderModList);
+
+$("#btnSaveModConfig").onclick = () => run(async () => {
+  const mods = {};
+  for (const [folder, edit] of Object.entries(modState.edits)) {
+    const m = modByFolder(folder);
+    // Ghi đủ mọi tuỳ chọn như game, để file rõ ràng giá trị đang dùng.
+    const config = {};
+    for (const opt of m.options) if (opt.name && !opt.header) config[opt.name] = optionValue(m, opt);
+    mods[folder] = { enabled: edit.enabled, config };
+  }
+  await api("PUT", C() + "/modconfig", { mods });
+  await Promise.all([loadModConfig(), loadFile("modoverrides")]);
+}, "Đã lưu. Khởi động lại server để áp dụng.");
+
+$("#btnDownloadMods").onclick = () => run(async () => {
+  await api("POST", C() + "/mods/download");
+  modState.downloading = true;
+  $("#btnDownloadMods").disabled = true;
+  $("#btnDownloadMods").textContent = "Đang tải...";
+}, "Đang tải mod bằng steamcmd (xem tiến trình ở log Master)...");
+
+// Gọi từ refreshServer: tải xong thì đọc lại tuỳ chọn.
+function checkModDownload(busy) {
+  if (!modState.downloading || busy) return;
+  modState.downloading = false;
+  $("#btnDownloadMods").disabled = false;
+  $("#btnDownloadMods").textContent = "Tải mod về";
+  if ($("#mods").classList.contains("active")) run(() => loadModConfig(true), "Đã tải mod xong");
+}
+
+loaders.mods = () => run(async () => {
+  const data = await api("GET", C() + "/mods");
+  $("#modsList").value = data.mods.join("\n");
+  await Promise.all([loadModConfig(), loadFile("modoverrides")]);
+});
+
+$("#btnSaveMods").onclick = () => run(async () => {
+  const data = await api("PUT", C() + "/mods", { mods: $("#modsList").value.split("\n").filter((x) => x.trim()) });
+  $("#modsList").value = data.mods.join("\n");
+  await loadModConfig(true);
+}, "Đã lưu danh sách mod");
+
+// ---- World: upload / backups ----
+loaders.world = () => run(() => Promise.all([...["master_leveldata", "caves_worldgen"].map(loadFile), loadBackups()]));
+
+async function loadBackups() {
+  const { backups } = await api("GET", C() + "/backups");
+  $("#backupList").innerHTML = backups.length ? backups.map((b) => `
+    <div class="row" style="justify-content:space-between;border-top:1px solid var(--border);padding:6px 0">
+      <span>${esc(b.name)} <span class="muted">· ${b.time} · ${b.size_mb} MB</span></span>
+      <span class="row">
+        <a class="btn" href="${C()}/backups/${encodeURIComponent(b.name)}">Tải về</a>
+        <button class="btn" data-restore="${esc(b.name)}">Khôi phục</button>
+        <button class="btn danger" data-delete="${esc(b.name)}">Xoá</button>
+      </span>
+    </div>`).join("") : '<span class="muted">Chưa có bản sao lưu.</span>';
+}
+
+function importDone(res) {
+  const parts = [`Đã sao lưu bản cũ: ${res.backup}`, res.caves ? "Có Caves" : "Không có Caves (đã tắt Caves)"];
+  if (res.mods.length) parts.push(`${res.mods.length} mod được thêm vào danh sách tải`);
+  toast("Xong! " + parts.join(" · "));
+  loaders.world();
+}
+
+$("#backupList").addEventListener("click", (e) => {
+  const restore = e.target.dataset.restore, del = e.target.dataset.delete;
+  if (restore && confirm(`Khôi phục "${restore}"? Thế giới hiện tại sẽ được sao lưu trước.`))
+    run(async () => importDone(await api("POST", `${C()}/backups/${encodeURIComponent(restore)}/restore`)));
+  if (del && confirm(`Xoá "${del}"?`))
+    run(async () => { await api("DELETE", `${C()}/backups/${encodeURIComponent(del)}`); loadBackups(); }, "Đã xoá");
+});
+
+$("#btnExportLocal").onclick = () => {
+  const url = `${C()}/export-local?mods=${$("#exportMods").checked}`;
+  $("#exportState").textContent = "Đang đóng gói, trình duyệt sẽ bắt đầu tải sau ít giây...";
+  setTimeout(() => ($("#exportState").textContent = ""), 15000);
+  location.href = url;
+};
+$("#btnBackup").onclick = () => run(async () => { await api("POST", C() + "/backups"); loadBackups(); }, "Đã sao lưu");
+
+$("#uploadForm").onsubmit = (e) => {
+  e.preventDefault();
+  const file = $("#worldFile").files[0];
+  if (!file) return;
+  if (!confirm(`Thay thế thế giới hiện tại bằng "${file.name}"?`)) return;
+
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("use_cluster_ini", $("#useClusterIni").checked);
+
+  const xhr = new XMLHttpRequest();
+  const bar = $("#uploadProgress");
+  bar.style.display = "";
+  $("#btnUpload").disabled = true;
+
+  xhr.upload.onprogress = (ev) => {
+    if (!ev.lengthComputable) return;
+    bar.value = (ev.loaded / ev.total) * 100;
+    $("#uploadPct").textContent = ev.loaded === ev.total ? "Đang xử lý..." : Math.round(bar.value) + "%";
+  };
+  xhr.onloadend = () => {
+    bar.style.display = "none";
+    $("#uploadPct").textContent = "";
+    $("#btnUpload").disabled = false;
+    let data = {};
+    try { data = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status === 200) { importDone(data); $("#worldFile").value = ""; refreshServer(); }
+    else toast(typeof data.detail === "string" ? data.detail : "Upload thất bại", true);
+  };
+  xhr.open("POST", C() + "/upload");
+  xhr.send(fd);
+};
+
+// ============================== Loop ============================== //
+route();
+setInterval(() => (cid ? refreshServer() : refreshHome()), 3000);
+setInterval(() => {
+  if (cid && $("#dashboard").classList.contains("active")) pollLog($("#logBox"), `${C()}/logs/${logState.shard}`, logState);
+  if (!cid && $("#installLogCard").style.display !== "none") pollLog($("#installLog"), "/api/install/log", installState);
+}, 1500);
+</script>
+</body>
+</html>
