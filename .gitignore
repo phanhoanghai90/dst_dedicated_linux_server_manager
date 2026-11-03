@@ -4,3 +4,7 @@ __pycache__/
 config.json
 .*.bak*
 *.bak
+build/
+dist/
+.venv-desktop/
+DSTLauncher.spec

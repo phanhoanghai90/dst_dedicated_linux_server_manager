@@ -293,6 +293,40 @@
 
     <!-- World -->
     <section id="world">
+      <div class="card" id="syncCard">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">Đồng bộ với máy local (Windows)</h2>
+          <span id="syncAgent" class="badge offline">Chưa cài</span>
+        </div>
+        <p class="hint">Đồng bộ <b>2 chiều</b> thế giới này với một thư mục trên máy Windows của bạn. Một agent nhỏ chạy nền trên máy local, tự đồng bộ theo chu kỳ bên dưới; bấm <b>Đồng bộ ngay</b> thì agent bắt đầu trong khoảng 30 giây. Bên nào thay đổi thì bên kia được cập nhật; cả hai cùng thay đổi thì bản mới hơn được giữ. Bên bị ghi đè luôn được sao lưu trước.</p>
+        <div id="syncInfo" class="muted" style="margin-top:8px"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn primary" id="btnSyncNow">Đồng bộ ngay</button>
+          <button class="btn" id="btnSyncPull" title="Ghi đè thư mục local bằng bản trên server">Lấy bản từ server</button>
+          <button class="btn" id="btnSyncPush" title="Ghi đè thế giới trên server bằng bản ở máy local">Đẩy bản local lên</button>
+          <label class="row" style="gap:6px;margin-left:auto">Tự đồng bộ mỗi
+            <select id="syncInterval" style="width:auto;margin:0">
+              <option value="6">6 giờ</option><option value="12">12 giờ</option><option value="24">1 ngày</option>
+              <option value="48">2 ngày</option><option value="168">1 tuần</option>
+            </select>
+          </label>
+        </div>
+        <details style="margin-top:12px">
+          <summary class="muted" style="cursor:pointer">Cài agent trên máy Windows</summary>
+          <ol style="margin-top:8px">
+            <li>Tải bộ cài, giải nén, chạy <code>CAI_DAT.bat</code>.</li>
+            <li>Chọn thư mục để đồng bộ. Muốn chơi bằng <b>Host Game</b>: chọn hoặc tạo <code>Cluster_N</code> trong <code>Documents\Klei\DoNotStarveTogether\&lt;dãy số&gt;\</code>.</li>
+            <li>Lần đồng bộ đầu tiên luôn lấy thế giới <b>từ server</b> về (nội dung cũ trong thư mục được sao lưu).</li>
+          </ol>
+          <p class="hint">Bộ cài chứa token riêng của server này: đừng chia sẻ cho người khác. "Đổi token" làm agent đã cài ngừng hoạt động (phải tải và cài lại).</p>
+          <div class="row" style="margin-top:8px">
+            <a class="btn primary" id="btnSyncAgent">Tải bộ cài agent</a>
+            <button class="btn danger" id="btnSyncReset">Đổi token</button>
+          </div>
+        </details>
+        <div id="syncHistory" style="margin-top:12px"></div>
+      </div>
+
       <div class="card">
         <h2>Upload thế giới từ máy của bạn</h2>
         <ol>
@@ -896,7 +930,7 @@ $("#btnSaveMods").onclick = () => run(async () => {
 }, "Đã lưu danh sách mod");
 
 // ---- World: upload / backups ----
-loaders.world = () => run(() => Promise.all([...["master_leveldata", "caves_worldgen"].map(loadFile), loadBackups()]));
+loaders.world = () => run(() => Promise.all([...["master_leveldata", "caves_worldgen"].map(loadFile), loadBackups(), loadSync()]));
 
 async function loadBackups() {
   const { backups } = await api("GET", C() + "/backups");
@@ -925,6 +959,70 @@ $("#backupList").addEventListener("click", (e) => {
   if (del && confirm(`Xoá "${del}"?`))
     run(async () => { await api("DELETE", `${C()}/backups/${encodeURIComponent(del)}`); loadBackups(); }, "Đã xoá");
 });
+
+// ---- World: đồng bộ với máy local ----
+const SYNC_ACTION = { pull: "Lấy từ server", push: "Đẩy lên server", none: "Không cần", wait: "Hoãn", skip: "Hoãn", error: "Lỗi" };
+const fmtTime = (t) => t ? new Date(t * 1000).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" }) : "—";
+function ago(sec) {
+  if (sec < 60) return "vừa xong";
+  if (sec < 3600) return `${Math.floor(sec / 60)} phút trước`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} giờ trước`;
+  return `${Math.floor(sec / 86400)} ngày trước`;
+}
+
+async function loadSync() {
+  const s = await api("GET", C() + "/sync");
+  const el = $("#syncAgent");
+  const a = s.agent;
+  if (!s.configured) { el.textContent = "Chưa cài"; el.className = "badge offline"; }
+  else if (s.running) { el.textContent = "Đang đồng bộ..."; el.className = "badge starting"; }
+  else if (s.agent_online) { el.textContent = "Agent đang kết nối"; el.className = "badge online"; }
+  else { el.textContent = a ? "Mất kết nối" : "Chờ agent kết nối"; el.className = "badge stopping"; }
+
+  const lines = [];
+  if (a) {
+    lines.push(`Máy: <b>${esc(a.host || "?")}</b> · Thư mục: <code>${esc(a.folder || "?")}</code>`);
+    if (!s.agent_online) lines.push(`Agent kết nối lần cuối ${ago(s.now - a.seen)} (máy tắt hoặc chưa đăng nhập Windows).`);
+    else if (a.game_running) lines.push("Game DST đang mở trên máy local: sẽ đồng bộ sau khi tắt game.");
+  } else if (s.configured) {
+    lines.push("Đã tạo bộ cài nhưng agent chưa kết nối lần nào.");
+  } else {
+    lines.push('Chưa cài agent. Mở mục <b>Cài agent trên máy Windows</b> bên dưới.');
+  }
+  if (s.configured) {
+    lines.push(`Đồng bộ thành công lần cuối: <b>${fmtTime(s.last_success)}</b> · Lần tới: ${s.requested ? "<b>đang chờ agent</b>" : fmtTime(s.next_due)}`);
+  }
+  $("#syncInfo").innerHTML = lines.join("<br>");
+
+  for (const b of ["#btnSyncNow", "#btnSyncPull", "#btnSyncPush"]) $(b).disabled = !s.configured || !!s.requested || s.running;
+  $("#btnSyncReset").disabled = !s.configured;
+  if (document.activeElement !== $("#syncInterval")) $("#syncInterval").value = String(s.interval_hours);
+  $("#btnSyncAgent").href = C() + "/sync/agent";
+
+  $("#syncHistory").innerHTML = s.history.length ? s.history.slice(0, 8).map((h) => `
+    <div style="border-top:1px solid var(--border);padding:6px 0">
+      <span class="${h.ok ? "" : "err"}">${h.ok ? "✓" : "✗"} ${esc(SYNC_ACTION[h.action] || h.action || "")}</span>
+      <span class="muted">· ${fmtTime(h.time)}</span><br>
+      <span class="muted" style="font-size:13px">${esc(h.message)}</span>
+    </div>`).join("") : "";
+}
+
+function requestSync(mode, question) {
+  if (question && !confirm(question)) return;
+  run(async () => { await api("POST", C() + "/sync/request", { mode }); await loadSync(); },
+      "Đã gửi yêu cầu, agent sẽ bắt đầu trong khoảng 30 giây");
+}
+$("#btnSyncNow").onclick = () => requestSync("auto");
+$("#btnSyncPull").onclick = () => requestSync("pull", "Ghi đè thư mục ở máy local bằng bản trên server? (Bản ở máy local được sao lưu trước.)");
+$("#btnSyncPush").onclick = () => requestSync("push", "Ghi đè thế giới trên server bằng bản ở máy local? (Bản trên server được sao lưu trước; server đang chạy sẽ được khởi động lại.)");
+$("#syncInterval").onchange = (e) => run(async () => {
+  await api("PUT", C() + "/sync/settings", { interval_hours: +e.target.value }); await loadSync();
+}, "Đã lưu chu kỳ đồng bộ");
+$("#btnSyncAgent").onclick = () => setTimeout(() => run(loadSync), 1500);
+$("#btnSyncReset").onclick = () => {
+  if (!confirm("Đổi token? Agent đã cài sẽ ngừng hoạt động, bạn phải tải và cài lại bộ cài mới. Lần đồng bộ tiếp theo được coi là lần đầu (lấy từ server).")) return;
+  run(async () => { await api("POST", C() + "/sync/reset"); await loadSync(); }, "Đã đổi token");
+};
 
 $("#btnExportLocal").onclick = () => {
   const url = `${C()}/export-local?mods=${$("#exportMods").checked}`;
@@ -970,6 +1068,7 @@ $("#uploadForm").onsubmit = (e) => {
 // ============================== Loop ============================== //
 route();
 setInterval(() => (cid ? refreshServer() : refreshHome()), 3000);
+setInterval(() => { if (cid && $("#world").classList.contains("active")) loadSync().catch(() => {}); }, 5000);
 setInterval(() => {
   if (cid && $("#dashboard").classList.contains("active")) pollLog($("#logBox"), `${C()}/logs/${logState.shard}`, logState);
   if (!cid && $("#installLogCard").style.display !== "none") pollLog($("#installLog"), "/api/install/log", installState);

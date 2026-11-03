@@ -1,0 +1,34 @@
+name: Build DST Launcher (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["launcher-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements-desktop.txt
+      - name: Build exe
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed --name DSTLauncher
+          --collect-all lupa --hidden-import remote_link
+          dst_desktop.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DSTLauncher
+          path: dist/DSTLauncher.exe
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DSTLauncher.exe

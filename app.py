@@ -5,12 +5,14 @@ https://github.com/diogo-webber/vox-launcher, viết lại cho Linux + web.
 """
 
 import configparser
+import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -23,17 +25,21 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 # ------------------------------------------------------------------------------------ #
 # Đường dẫn
 
-BASE_DIR      = Path(os.environ.get("DST_BASE", "/root/dst"))
-WEBUI_DIR     = Path(__file__).resolve().parent
+IS_WINDOWS    = os.name == "nt"
+_DEFAULT_BASE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "DSTLauncher" if IS_WINDOWS else Path("/root/dst")
+
+BASE_DIR      = Path(os.environ.get("DST_BASE", _DEFAULT_BASE))
+WEBUI_DIR     = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))  # PyInstaller giải nén file vào _MEIPASS
 CONFIG_FILE   = WEBUI_DIR / "config.json"
 SERVER_DIR    = BASE_DIR / "server"
 STEAMCMD_DIR  = BASE_DIR / "steamcmd"
@@ -41,14 +47,18 @@ STORAGE_ROOT  = BASE_DIR / "data"
 CONF_DIR      = "DoNotStarveTogether"
 CLUSTERS_ROOT = STORAGE_ROOT / CONF_DIR
 BACKUP_ROOT   = STORAGE_ROOT / "backups"
-SERVER_EXE    = SERVER_DIR / "bin64" / "dontstarve_dedicated_server_nullrenderer_x64"
+SERVER_EXE    = SERVER_DIR / "bin64" / ("dontstarve_dedicated_server_nullrenderer_x64" + (".exe" if IS_WINDOWS else ""))
+STEAMCMD_EXE  = STEAMCMD_DIR / ("steamcmd.exe" if IS_WINDOWS else "steamcmd.sh")
 MODS_DIR      = SERVER_DIR / "mods"
 MODS_SETUP    = MODS_DIR / "dedicated_server_mods_setup.lua"
 WORKSHOP_DIR  = BASE_DIR / "workshop"  # steamcmd tải mod về đây
 
 DST_APP_ID    = "343050"
 DST_GAME_ID   = "322330"  # app id của game, dùng cho Workshop
-STEAMCMD_URL  = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz"
+STEAMCMD_URL  = ("https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip" if IS_WINDOWS
+                 else "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz")
+# Windows: không bật cửa sổ console đen cho từng tiến trình con.
+NO_WINDOW     = {"creationflags": subprocess.CREATE_NO_WINDOW} if IS_WINDOWS else {}
 SHARDS        = ("Master", "Caves")
 PANEL_FILE    = "webpanel.json"  # cấu hình riêng của web cho từng server (mods, caves, slot port)
 
@@ -202,6 +212,13 @@ class Shard:
         if not self.is_running():
             return None
 
+        if IS_WINDOWS:
+            try:
+                import psutil
+                return round(psutil.Process(self.process.pid).memory_info().rss / 1024 / 1024)
+            except Exception:
+                return None
+
         try:
             for line in Path(f"/proc/{self.process.pid}/status").read_text().splitlines():
                 if line.startswith("VmRSS:"):
@@ -240,7 +257,8 @@ class Shard:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
-                start_new_session=True,
+                **({"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
+                   if IS_WINDOWS else {"start_new_session": True}),
             )
         except OSError as e:
             self.status = "offline"
@@ -311,7 +329,7 @@ class Shard:
         except (OSError, ValueError):
             return False
 
-    def stop(self, timeout=90):
+    def stop(self, timeout=90, save=True):
         if not self.is_running():
             return
 
@@ -321,7 +339,7 @@ class Shard:
             process.terminate()
         else:
             self.status = "stopping"
-            self.send("c_shutdown(true)")
+            self.send(f"c_shutdown({str(save).lower()})")
 
         try:
             process.wait(timeout=timeout)
@@ -554,16 +572,16 @@ class Cluster:
             self.stop_all_and_wait()
             self.start_all()
 
-    def stop_all(self):
-        threads = [threading.Thread(target=s.stop) for s in self.shards.values() if s.is_running()]
+    def stop_all(self, save=True):
+        threads = [threading.Thread(target=s.stop, kwargs={"save": save}) for s in self.shards.values() if s.is_running()]
 
         for t in threads:
             t.start()
 
         return threads
 
-    def stop_all_and_wait(self):
-        for t in self.stop_all():
+    def stop_all_and_wait(self, save=True):
+        for t in self.stop_all(save):
             t.join()
 
     def run_background(self, fn):
@@ -683,9 +701,12 @@ class Registry:
 
         return cluster_id
 
-    def create(self, name, copy_token):
+    def create(self, name, copy_token, cluster_id=None):
         with self.lock:
-            cluster = Cluster(self.make_id(name))
+            if cluster_id is not None and (not CLUSTER_ID_RE.match(cluster_id) or cluster_id in self.clusters):
+                raise HTTPException(400, f"ID server không hợp lệ hoặc đã có: {cluster_id}")
+
+            cluster = Cluster(cluster_id or self.make_id(name))
             cluster.save_settings({"slot": self.free_slot(), "caves_enabled": True, "mods": []})
             cluster.ensure_files(cluster_name=name)
 
@@ -707,6 +728,7 @@ class Registry:
         with self.lock:
             shutil.rmtree(cluster.dir)
             self.clusters.pop(cluster.id, None)
+            sync_state_path(cluster.id).unlink(missing_ok=True)
 
         write_mods_setup()
 
@@ -1057,7 +1079,7 @@ def sync_workshop_mods(mod_ids, log):
     Trả về danh sách mod không tải được.
     """
 
-    steamcmd = STEAMCMD_DIR / "steamcmd.sh"
+    steamcmd = STEAMCMD_EXE
 
     if not steamcmd.exists():
         return list(mod_ids)
@@ -1075,7 +1097,7 @@ def sync_workshop_mods(mod_ids, log):
     with steamcmd_lock:
         try:
             process = subprocess.run(
-                args, cwd=STEAMCMD_DIR, capture_output=True, text=True, errors="replace", timeout=1800,
+                args, cwd=STEAMCMD_DIR, capture_output=True, text=True, errors="replace", timeout=1800, **NO_WINDOW,
             )
             output = ANSI_RE.sub("", process.stdout)
         except subprocess.TimeoutExpired:
@@ -1110,7 +1132,7 @@ def run_app_update(log):
     """Cài/cập nhật game bằng steamcmd, trả về exit code. Người gọi phải giữ steamcmd_lock."""
 
     args = [
-        str(STEAMCMD_DIR / "steamcmd.sh"),
+        str(STEAMCMD_EXE),
         "+force_install_dir", str(SERVER_DIR),
         "+login", "anonymous",
         "+app_update", DST_APP_ID, "validate",
@@ -1123,7 +1145,7 @@ def run_app_update(log):
 
         process = subprocess.Popen(
             args, cwd=STEAMCMD_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, errors="replace", bufsize=1,
+            text=True, errors="replace", bufsize=1, **NO_WINDOW,
         )
 
         for line in process.stdout:
@@ -1140,7 +1162,7 @@ def run_app_update(log):
 def latest_build():
     """Build mới nhất của nhánh public trên Steam, None nếu không kiểm tra được."""
 
-    steamcmd = STEAMCMD_DIR / "steamcmd.sh"
+    steamcmd = STEAMCMD_EXE
 
     if not steamcmd.exists():
         return None
@@ -1150,7 +1172,7 @@ def latest_build():
     try:
         with steamcmd_lock:
             output = subprocess.run(
-                args, cwd=STEAMCMD_DIR, capture_output=True, text=True, errors="replace", timeout=300,
+                args, cwd=STEAMCMD_DIR, capture_output=True, text=True, errors="replace", timeout=300, **NO_WINDOW,
             ).stdout
     except subprocess.TimeoutExpired:
         return None
@@ -1268,16 +1290,20 @@ class InstallJob:
 
     def _install(self):
         try:
-            steamcmd = STEAMCMD_DIR / "steamcmd.sh"
+            steamcmd = STEAMCMD_EXE
 
             if not steamcmd.exists():
                 self.log("Đang tải steamcmd...")
                 STEAMCMD_DIR.mkdir(parents=True, exist_ok=True)
-                archive = STEAMCMD_DIR / "steamcmd_linux.tar.gz"
+                archive = STEAMCMD_DIR / STEAMCMD_URL.rsplit("/", 1)[1]
                 urllib.request.urlretrieve(STEAMCMD_URL, archive)
 
-                with tarfile.open(archive) as tar:
-                    tar.extractall(STEAMCMD_DIR, filter="data")
+                if IS_WINDOWS:
+                    with zipfile.ZipFile(archive) as zf:
+                        zf.extractall(STEAMCMD_DIR)
+                else:
+                    with tarfile.open(archive) as tar:
+                        tar.extractall(STEAMCMD_DIR, filter="data")
 
                 archive.unlink()
 
@@ -1312,6 +1338,14 @@ def installed_build():
 
 
 def memory_info():
+    if IS_WINDOWS:
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            return {"total_mb": vm.total // 1024 // 1024, "available_mb": vm.available // 1024 // 1024}
+        except Exception:
+            return {"total_mb": None, "available_mb": None}
+
     info = {}
 
     for line in Path("/proc/meminfo").read_text().splitlines():
@@ -1427,6 +1461,14 @@ def import_cluster(cluster, zip_path, use_cluster_ini):
             if (src / name).exists():
                 shutil.copyfile(src / name, cluster.dir / name)
 
+    mod_ids = finish_world_import(cluster, has_caves)
+
+    return {"backup": backup, "caves": has_caves, "mods": mod_ids}
+
+
+def finish_world_import(cluster, has_caves):
+    """Sau khi thay file thế giới: tạo file mặc định còn thiếu, bật/tắt Caves, cập nhật danh sách mod."""
+
     # Tạo lại file mặc định còn thiếu (vd. Caves/worldgenoverride.lua khi thế giới không có hang).
     cluster.ensure_files()
 
@@ -1443,7 +1485,7 @@ def import_cluster(cluster, zip_path, use_cluster_ini):
     write_mods_setup()
     cluster.sync_modoverrides()
 
-    return {"backup": backup, "caves": has_caves, "mods": mod_ids}
+    return mod_ids
 
 
 # ------------------------------------------------------------------------------------ #
@@ -2078,6 +2120,562 @@ def export_local(mods: bool = False, cluster: Cluster = Depends(get_cluster)):
     name = f"{cluster.id}_local_{datetime.now():%Y%m%d-%H%M}{'_mods' if mods else ''}.zip"
 
     return FileResponse(tmp, filename=name, media_type="application/zip", background=BackgroundTask(os.unlink, tmp))
+
+
+# --- Đồng bộ 2 chiều với một thư mục trên máy Windows ------------------------------- #
+#
+# Máy local thường nằm sau NAT nên server không gọi vào được. Trên máy local chạy một agent
+# PowerShell (sync_agent/dstsync.ps1), cứ SYNC_POLL_SECONDS hỏi server qua /sync-api một lần.
+# Server quyết định chiều đồng bộ dựa trên "baseline" = mã băm của lần đồng bộ thành công trước:
+#   - chỉ server đổi  -> lấy về local (pull)
+#   - chỉ local đổi   -> đẩy lên server (push)
+#   - cả hai cùng đổi -> bên có file save mới hơn thắng, bên kia được sao lưu trước khi ghi đè.
+
+SYNC_DIR           = STORAGE_ROOT / "sync"
+SYNC_AGENT_DIR     = WEBUI_DIR / "sync_agent"
+SYNC_SKIP_FILES    = {"cluster_token.txt", PANEL_FILE, "server.ini", "server_log.txt", "server_chat_log.txt",
+                      "client_log.txt", "client_chat_log.txt"}
+SYNC_SKIP_DIRS     = {"backup"}
+SYNC_MANIFEST_NAME = "__dstsync_manifest.json"
+SYNC_RETRY_SECONDS = 30 * 60   # đồng bộ hỏng/bị hoãn thì thử lại sau chừng này
+SYNC_ONLINE_SECONDS = 120      # agent không hỏi quá chừng này thì coi là mất kết nối
+SYNC_HISTORY_KEEP  = 20
+SYNC_MODES         = ("auto", "pull", "push")
+
+_sync_state_lock = threading.Lock()
+
+
+def sync_state_path(cid):
+    return SYNC_DIR / f"{cid}.json"
+
+
+def sync_load(cid):
+    path = sync_state_path(cid)
+    state = json.loads(path.read_text()) if path.exists() else {}
+
+    for key, value in {
+        "token": None, "interval_hours": 24, "baseline": None, "pending": None, "requested": None,
+        "last_attempt": 0, "last_success": 0, "running_since": 0, "agent": None, "history": [],
+    }.items():
+        state.setdefault(key, value)
+
+    return state
+
+
+def sync_update(cid, fn):
+    """Đọc - sửa - ghi trạng thái sync dưới khoá. fn(state) sửa state tại chỗ."""
+
+    with _sync_state_lock:
+        state = sync_load(cid)
+        result = fn(state)
+        SYNC_DIR.mkdir(parents=True, exist_ok=True)
+        path = sync_state_path(cid)
+        path.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+        path.chmod(0o600)
+        return result
+
+
+def sync_skipped(rel):
+    parts = rel.split("/")
+    return parts[-1] in SYNC_SKIP_FILES or bool(SYNC_SKIP_DIRS & set(parts[:-1]))
+
+
+def sync_clean_path(rel):
+    """Đường dẫn tương đối kiểu a/b/c do agent gửi lên; chặn .., đường dẫn tuyệt đối..."""
+
+    if not isinstance(rel, str) or not rel or "\\" in rel or rel.startswith("/") or "\0" in rel:
+        raise HTTPException(400, f"Đường dẫn không hợp lệ: {rel!r}")
+
+    parts = rel.split("/")
+
+    if any(p in ("", ".", "..") for p in parts) or ":" in parts[0]:
+        raise HTTPException(400, f"Đường dẫn không hợp lệ: {rel!r}")
+
+    return rel
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+
+    with path.open("rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+
+    return h.hexdigest()
+
+
+def server_manifest(cluster):
+    manifest = {}
+
+    for file in cluster.dir.rglob("*"):
+        if not file.is_file():
+            continue
+
+        rel = file.relative_to(cluster.dir).as_posix()
+
+        if not sync_skipped(rel):
+            manifest[rel] = {"sha": file_sha256(file), "mtime": int(file.stat().st_mtime)}
+
+    return manifest
+
+
+def manifest_hash(manifest):
+    h = hashlib.sha256()
+
+    for rel in sorted(manifest):
+        h.update(f"{rel}\0{manifest[rel]['sha'].lower()}\n".encode())
+
+    return h.hexdigest()
+
+
+def manifest_has_world(manifest):
+    return any(len(rel.split("/")) > 2 and rel.split("/")[1] == "save" for rel in manifest)
+
+
+def manifest_newest(manifest):
+    saves = [m.get("mtime", 0) for rel, m in manifest.items() if "/save/" in rel]
+    return max(saves or [m.get("mtime", 0) for m in manifest.values()] or [0])
+
+
+def sync_decide(server, local, baseline, mode):
+    """Trả về (action, lý do, có xung đột không). action: none | pull | push."""
+
+    hs, hl = manifest_hash(server), manifest_hash(local)
+
+    if hs == hl:
+        return "none", "Hai bên đã giống nhau.", False
+    if mode == "pull":
+        return "pull", "Lấy bản từ server theo yêu cầu (bản ở máy local được sao lưu trước).", False
+    if mode == "push":
+        return "push", "Đẩy bản ở máy local lên server theo yêu cầu (bản trên server được sao lưu trước).", False
+    if not manifest_has_world(local):
+        return "pull", "Máy local chưa có thế giới, lấy từ server về.", False
+    if not manifest_has_world(server):
+        return "push", "Server chưa có thế giới, đẩy bản ở máy local lên.", False
+    if baseline is None:
+        return "pull", "Đồng bộ lần đầu: lấy thế giới từ server (bản ở máy local được sao lưu trước).", False
+    if hl == baseline:
+        return "pull", "Server có thay đổi mới.", False
+    if hs == baseline:
+        return "push", "Máy local có thay đổi mới.", False
+
+    if manifest_newest(local) > manifest_newest(server):
+        return "push", "Cả hai bên đều thay đổi; bản ở máy local mới hơn nên được giữ (bản trên server đã được sao lưu).", True
+
+    return "pull", "Cả hai bên đều thay đổi; bản trên server mới hơn nên được giữ (bản ở máy local đã được sao lưu).", True
+
+
+def sync_players(cluster):
+    if not cluster.shards["Master"].is_running():
+        return []
+
+    return (cluster.stats or {}).get("players") or []
+
+
+def sync_add_history(state, ok, action, message):
+    state["history"].insert(0, {"time": int(time.time()), "ok": ok, "action": action, "message": message})
+    del state["history"][SYNC_HISTORY_KEEP:]
+
+
+def sync_status(cid):
+    state = sync_load(cid)
+    now = time.time()
+    agent = state["agent"]
+    next_due = None
+
+    if state["token"]:
+        next_due = max(state["last_success"] + state["interval_hours"] * 3600,
+                       state["last_attempt"] + SYNC_RETRY_SECONDS if state["last_attempt"] > state["last_success"] else 0)
+
+    return {
+        "configured": bool(state["token"]),
+        "agent": agent,
+        "agent_online": bool(agent and now - agent.get("seen", 0) < SYNC_ONLINE_SECONDS),
+        "interval_hours": state["interval_hours"],
+        "requested": state["requested"],
+        "running": bool(state["running_since"] and now - state["running_since"] < 15 * 60),
+        "last_success": state["last_success"] or None,
+        "next_due": next_due,
+        "history": state["history"],
+        "now": int(now),
+    }
+
+
+# ---- API cho agent (xác thực bằng token riêng của từng server, không dùng tài khoản web) ----
+
+sync_api = FastAPI(title="DST Sync API", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def sync_cluster(cid: str, x_sync_token: str = Header(default="")) -> Cluster:
+    token = sync_load(cid)["token"] if CLUSTER_ID_RE.match(cid) else None
+
+    if not token or not secrets.compare_digest(x_sync_token.encode(), token.encode()):
+        raise HTTPException(401, "Token đồng bộ không đúng (có thể đã bị đổi trên web). Tải lại bộ cài agent.")
+
+    return registry.get(cid)
+
+
+class SyncPoll(BaseModel):
+    version: int = 0
+    folder: str = ""
+    host: str = ""
+    game_running: bool = False
+
+
+@sync_api.post("/{cid}/poll")
+def sync_poll(body: SyncPoll, cluster: Cluster = Depends(sync_cluster)):
+    now = time.time()
+
+    def apply(state):
+        state["agent"] = {"seen": int(now), "folder": body.folder[:300], "host": body.host[:100],
+                          "version": body.version, "game_running": body.game_running}
+
+        if state["requested"]:
+            return "manual"
+
+        if now - state["last_success"] >= state["interval_hours"] * 3600 and now - state["last_attempt"] >= SYNC_RETRY_SECONDS:
+            return "schedule"
+
+        return None
+
+    reason = sync_update(cluster.id, apply)
+
+    return {
+        "due": reason is not None,
+        "reason": reason,
+        "rules": {"skip_files": sorted(SYNC_SKIP_FILES), "skip_dirs": sorted(SYNC_SKIP_DIRS)},
+    }
+
+
+class SyncPlan(BaseModel):
+    manifest: dict[str, dict]
+
+
+def clean_manifest(manifest):
+    result = {}
+
+    for rel, info in manifest.items():
+        rel = sync_clean_path(rel)
+
+        if sync_skipped(rel):
+            continue
+
+        sha = str(info.get("sha", "")).lower()
+
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise HTTPException(400, f"Mã băm không hợp lệ cho {rel}")
+
+        result[rel] = {"sha": sha, "mtime": int(info.get("mtime") or 0)}
+
+    return result
+
+
+@sync_api.post("/{cid}/plan")
+def sync_plan(body: SyncPlan, cluster: Cluster = Depends(sync_cluster)):
+    local = clean_manifest(body.manifest)
+    state = sync_load(cluster.id)
+    mode = state["requested"] if state["requested"] in ("pull", "push") else "auto"
+
+    sync_update(cluster.id, lambda s: s.update(last_attempt=int(time.time()), running_since=int(time.time())))
+
+    if cluster.busy:
+        return {"action": "wait", "reason": "Server đang bận (đang bật/tắt/cập nhật), sẽ thử lại sau.", "conflict": False}
+
+    server = server_manifest(cluster)
+    action, reason, conflict = sync_decide(server, local, state["baseline"], mode)
+    players = sync_players(cluster)
+
+    if action == "push" and players:
+        return {"action": "wait", "conflict": conflict,
+                "reason": f"Máy local có thay đổi nhưng đang có {len(players)} người chơi trên server, hoãn đẩy lên."}
+
+    if action == "pull" and players and cluster.shards["Master"].send("c_save()"):
+        # Có người đang chơi: lưu trước để lấy được trạng thái mới nhất.
+        time.sleep(5)
+        server = server_manifest(cluster)
+        action, reason, conflict = sync_decide(server, local, state["baseline"], mode)
+
+    if action == "push" and cluster.any_running():
+        reason += " Server sẽ được khởi động lại."
+
+    sync_update(cluster.id, lambda s: s.update(pending=manifest_hash(server)))
+
+    return {"action": action, "reason": reason, "conflict": conflict, "server": server}
+
+
+class SyncDownload(BaseModel):
+    paths: list[str]
+
+
+@sync_api.post("/{cid}/download")
+def sync_download(body: SyncDownload, cluster: Cluster = Depends(sync_cluster)):
+    fd, tmp = tempfile.mkstemp(suffix=".zip", dir=STORAGE_ROOT)
+    os.close(fd)
+
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for rel in dict.fromkeys(body.paths):
+                rel = sync_clean_path(rel)
+
+                # server.ini chỉ gửi khi máy local còn thiếu (agent tự xin), còn lại phải nằm trong tập đồng bộ.
+                if sync_skipped(rel) and rel.split("/")[-1] != "server.ini":
+                    raise HTTPException(400, f"Không được tải file này: {rel}")
+
+                file = cluster.dir / rel
+
+                if file.is_file() and file.resolve().is_relative_to(cluster.dir.resolve()):
+                    zf.write(file, rel)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+    return FileResponse(tmp, media_type="application/zip", background=BackgroundTask(os.unlink, tmp))
+
+
+def sync_apply_push(cluster, zip_path):
+    with tempfile.TemporaryDirectory(dir=STORAGE_ROOT) as tmp:
+        tmp = Path(tmp)
+
+        try:
+            safe_extract(zip_path, tmp)
+        except zipfile.BadZipFile:
+            raise HTTPException(400, "Dữ liệu gửi lên không phải zip hợp lệ.")
+
+        try:
+            local = clean_manifest(json.loads((tmp / SYNC_MANIFEST_NAME).read_text(encoding="utf-8")))
+        except (OSError, ValueError, AttributeError):
+            raise HTTPException(400, "Thiếu danh sách file trong gói gửi lên.")
+
+        if not manifest_has_world(local):
+            raise HTTPException(400, "Thư mục ở máy local không có thế giới (thiếu Master/save), không đẩy lên.")
+
+        incoming = {}
+
+        for file in tmp.rglob("*"):
+            rel = file.relative_to(tmp).as_posix()
+
+            if not file.is_file() or rel == SYNC_MANIFEST_NAME:
+                continue
+            if rel not in local or file_sha256(file) != local[rel]["sha"]:
+                raise HTTPException(400, f"File {rel} gửi lên không khớp danh sách, thử lại.")
+
+            incoming[rel] = file
+
+        if cluster.busy:
+            raise HTTPException(409, "Server đang bận, thử lại sau.")
+
+        players = sync_players(cluster)
+
+        if players:
+            raise HTTPException(409, f"Đang có {len(players)} người chơi trên server, hoãn đẩy lên.")
+
+        was_running = cluster.any_running()
+        master = cluster.shards["Master"]
+        cluster.busy = True
+
+        try:
+            if was_running:
+                # Không lưu khi tắt: thế giới sắp bị thay bằng bản ở máy local, lưu thêm chỉ làm lệch dữ liệu.
+                master.log("[web] Đồng bộ: tắt server để nhận thế giới từ máy local...")
+                cluster.stop_all_and_wait(save=False)
+
+            current = server_manifest(cluster)
+
+            for rel, info in local.items():
+                if rel not in incoming and current.get(rel, {}).get("sha") != info["sha"]:
+                    raise HTTPException(409, "Server vừa thay đổi trong lúc đồng bộ, sẽ thử lại sau.")
+
+            backup = make_backup(cluster, "truoc-sync")
+            own = read_ini(cluster.dir / "cluster.ini")
+
+            for rel in current:
+                if rel not in local:
+                    (cluster.dir / rel).unlink()
+
+            for rel, file in incoming.items():
+                dest = cluster.dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(file, dest)
+
+            for d in sorted((p for p in cluster.dir.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+                if d.parent != cluster.dir and not any(d.iterdir()):
+                    d.rmdir()
+
+            # Giữ phần [SHARD] của server (port giữa các shard, cluster_key) như khi upload thế giới.
+            if own.has_section("SHARD"):
+                parser = read_ini(cluster.dir / "cluster.ini")
+
+                if not parser.has_section("SHARD"):
+                    parser.add_section("SHARD")
+                for key, value in own.items("SHARD"):
+                    parser.set("SHARD", key, value)
+
+                write_ini(cluster.dir / "cluster.ini", parser)
+
+            # Giữ lựa chọn bật/tắt Caves của server; chỉ tắt khi thế giới gửi lên không có hang.
+            has_caves = cluster.load_settings().get("caves_enabled", True) and any(rel.startswith("Caves/") for rel in local)
+            finish_world_import(cluster, has_caves)
+            master.log(f"[web] Đồng bộ: đã nhận thế giới từ máy local (bản cũ sao lưu: {backup}).")
+        finally:
+            cluster.busy = False
+
+            if was_running:
+                cluster.run_background(cluster.start_all)
+
+    server = server_manifest(cluster)
+    sync_update(cluster.id, lambda s: s.update(pending=manifest_hash(server)))
+
+    return {"ok": True, "backup": backup, "restarted": was_running, "server": server}
+
+
+@sync_api.post("/{cid}/push")
+async def sync_push(request: Request, cluster: Cluster = Depends(sync_cluster)):
+    fd, tmp = tempfile.mkstemp(suffix=".zip", dir=STORAGE_ROOT)
+
+    try:
+        size = 0
+
+        with os.fdopen(fd, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(400, "Dữ liệu gửi lên quá lớn (tối đa 1 GB).")
+
+                f.write(chunk)
+
+        return await run_in_threadpool(sync_apply_push, cluster, Path(tmp))
+    finally:
+        os.unlink(tmp)
+
+
+class SyncDone(BaseModel):
+    ok: bool
+    action: str = ""
+    message: str = ""
+    manifest: dict[str, dict] | None = None
+
+
+@sync_api.post("/{cid}/done")
+def sync_done(body: SyncDone, cluster: Cluster = Depends(sync_cluster)):
+    local_hash = manifest_hash(clean_manifest(body.manifest)) if body.manifest is not None else None
+    now = int(time.time())
+
+    def apply(state):
+        state["running_since"] = 0
+        state["requested"] = None
+        ok, message = body.ok, body.message[:500]
+
+        if ok and local_hash != state["pending"]:
+            ok, message = False, "Sau khi đồng bộ, dữ liệu hai bên vẫn lệch (server có thể vừa lưu). Sẽ thử lại sau."
+
+        if ok:
+            state["baseline"] = state["pending"]
+            state["last_success"] = now
+
+        sync_add_history(state, ok, body.action[:20], message)
+        return ok
+
+    return {"ok": sync_update(cluster.id, apply)}
+
+
+app.mount("/sync-api", sync_api)
+
+
+# ---- API cho web ----
+
+@app.get("/api/clusters/{cid}/sync")
+def get_sync(cluster: Cluster = Depends(get_cluster)):
+    return sync_status(cluster.id)
+
+
+class SyncRequest(BaseModel):
+    mode: str = "auto"
+
+
+@app.post("/api/clusters/{cid}/sync/request")
+def request_sync(body: SyncRequest, cluster: Cluster = Depends(get_cluster)):
+    if body.mode not in SYNC_MODES:
+        raise HTTPException(400, "Chế độ không hợp lệ.")
+
+    if not sync_load(cluster.id)["token"]:
+        raise HTTPException(400, "Chưa cài agent ở máy local.")
+
+    sync_update(cluster.id, lambda s: s.update(requested=body.mode))
+    return sync_status(cluster.id)
+
+
+class SyncSettings(BaseModel):
+    interval_hours: int
+
+
+@app.put("/api/clusters/{cid}/sync/settings")
+def put_sync_settings(body: SyncSettings, cluster: Cluster = Depends(get_cluster)):
+    if not 1 <= body.interval_hours <= 24 * 7:
+        raise HTTPException(400, "Chu kỳ phải từ 1 giờ đến 7 ngày.")
+
+    sync_update(cluster.id, lambda s: s.update(interval_hours=body.interval_hours))
+    return sync_status(cluster.id)
+
+
+@app.post("/api/clusters/{cid}/sync/reset")
+def reset_sync(cluster: Cluster = Depends(get_cluster)):
+    """Đổi token (agent cũ ngừng hoạt động) và quên baseline: lần sau coi như đồng bộ lần đầu."""
+
+    sync_update(cluster.id, lambda s: s.update(token=None, baseline=None, pending=None, requested=None,
+                                              agent=None, last_success=0, last_attempt=0, running_since=0))
+    return sync_status(cluster.id)
+
+
+@app.get("/api/clusters/{cid}/desktop-export")
+def desktop_export(cluster: Cluster = Depends(get_cluster)):
+    """App DST Launcher trên Windows lấy cấu hình để tạo server giống hệt ở máy local."""
+
+    def ensure_token(state):
+        state["token"] = state["token"] or secrets.token_urlsafe(32)
+        return state["token"]
+
+    settings = cluster.load_settings()
+
+    return {
+        "id": cluster.id,
+        "name": cluster.name(),
+        "cluster_token": cluster.token_file.read_text().strip() if cluster.token_file.exists() else "",
+        "sync_token": sync_update(cluster.id, ensure_token),
+        "mods": settings.get("mods", []),
+        "caves_enabled": settings.get("caves_enabled", True),
+    }
+
+
+SYNC_INSTALL_BAT = r"""@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+pause
+"""
+
+
+@app.get("/api/clusters/{cid}/sync/agent")
+def download_sync_agent(request: Request, cluster: Cluster = Depends(get_cluster)):
+    def ensure_token(state):
+        state["token"] = state["token"] or secrets.token_urlsafe(32)
+        return state["token"]
+
+    token = sync_update(cluster.id, ensure_token)
+    config = {"server": str(request.base_url).rstrip("/"), "cluster": cluster.id, "name": cluster.name(), "token": token}
+    bom = b"\xef\xbb\xbf"  # PowerShell 5 cần BOM để đọc đúng tiếng Việt
+
+    fd, tmp = tempfile.mkstemp(suffix=".zip", dir=STORAGE_ROOT)
+    os.close(fd)
+
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in ("dstsync.ps1", "install.ps1", "uninstall.ps1"):
+            zf.writestr(name, bom + (SYNC_AGENT_DIR / name).read_bytes())
+
+        zf.writestr("HUONG_DAN.txt", bom + (SYNC_AGENT_DIR / "HUONG_DAN.txt").read_text().replace("\n", "\r\n").encode())
+        zf.writestr("config.json", json.dumps(config, indent=2, ensure_ascii=False))
+        zf.writestr("CAI_DAT.bat", SYNC_INSTALL_BAT.replace("\n", "\r\n"))
+
+    return FileResponse(tmp, filename=f"dstsync_{cluster.id}.zip", media_type="application/zip",
+                        background=BackgroundTask(os.unlink, tmp))
 
 
 # --- File editor --------------------------------------------------------------------- #

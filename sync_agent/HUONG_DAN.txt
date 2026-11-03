@@ -1,0 +1,28 @@
+DST Sync - đồng bộ 2 chiều thế giới trên server với một thư mục trên máy Windows
+================================================================================
+
+CÀI ĐẶT
+  1. Giải nén file zip này ra một thư mục bất kỳ.
+  2. Chạy CAI_DAT.bat, chọn thư mục để đồng bộ.
+     - Muốn chơi bằng Host Game trong game: chọn hoặc tạo thư mục Cluster_N trong
+       Documents\Klei\DoNotStarveTogether\<dãy số>\  (N là một ô thế giới còn trống).
+     - Chỉ muốn sao lưu: chọn thư mục bất kỳ.
+  3. Xong. Agent chạy nền và tự chạy lại mỗi khi đăng nhập Windows.
+     Có thể xoá thư mục giải nén sau khi cài.
+
+HOẠT ĐỘNG
+  - Tự đồng bộ theo chu kỳ đặt trên web (mặc định 1 ngày). Bấm "Đồng bộ ngay" trên web
+    (tab Thế giới) thì agent bắt đầu trong khoảng 30 giây.
+  - Chỉ server thay đổi      -> lấy về máy.
+  - Chỉ máy local thay đổi   -> đẩy lên server (server tự tắt/bật lại nếu đang chạy).
+  - Cả hai cùng thay đổi     -> bên có file save mới hơn được giữ.
+  - Lần đầu tiên             -> luôn lấy từ server.
+  - Bên bị ghi đè luôn được sao lưu trước:
+      máy local : %LOCALAPPDATA%\DSTSync\<tên server>\backups  (giữ 10 bản)
+      server    : tab Thế giới > Bản sao lưu (tên có chữ "truoc-sync")
+  - Hoãn đồng bộ khi game DST đang mở trên máy này, hoặc khi đẩy lên mà server đang có người chơi.
+  - Không đồng bộ: cluster_token.txt, server.ini, log, thư mục backup.
+    Phần [SHARD] trong cluster.ini của server (port, cluster_key) luôn được giữ.
+
+GỠ CÀI ĐẶT
+  Chạy GO_CAI_DAT.bat trong %LOCALAPPDATA%\DSTSync\<tên server>\

@@ -144,3 +144,16 @@ ufw allow 8768:8777/udp
 ## Ghi chú
 
 Don't Starve Together là thương hiệu của Klei Entertainment. Dự án này không liên quan đến Klei.
+
+## DST Launcher (app Windows, thay cho vox-launcher)
+
+App giao diện PyQt5 (`dst_desktop.py`) dùng chung lõi với web panel (`app.py`): tạo và chạy dedicated server ở máy local, đủ tính năng như web (mod và cấu hình mod, cấu hình server, log, console, sao lưu, nhập thế giới...). Dữ liệu nằm ở `%LOCALAPPDATA%\DSTLauncher`.
+
+**Liên kết với VPS** (mục "Liên kết VPS" ở thanh bên):
+
+- Nhập địa chỉ + tài khoản web panel, bấm **Đồng bộ**: app tạo ở máy local các server giống hệt trên web (cùng ID, cluster token, mod, Caves) và lấy thế giới về.
+- Khi mở app: dừng các server đó trên VPS (bỏ qua nếu đang có người chơi), rồi đồng bộ thế giới 2 chiều mỗi 10 phút (đổi được).
+- Khi đóng app: lưu và tắt server local, đồng bộ lần cuối, bật lại server trên VPS mà app đã dừng.
+- Không dùng chung với agent PowerShell (`sync_agent/`) cho cùng một server.
+
+**Build exe**: trên Windows chạy `build_desktop.bat` (cần Python 3.12 64-bit) → `dist\DSTLauncher.exe`. Hoặc đẩy một tag `launcher-v*` lên GitHub: workflow "Build DST Launcher (Windows)" tự build và đính exe vào mục Releases.

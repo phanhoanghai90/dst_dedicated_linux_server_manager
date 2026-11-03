@@ -1,0 +1,7 @@
+# App Windows "DST Launcher" (dst_desktop.py, PyQt5). Build: build_desktop.bat
+fastapi==0.162.0
+python-multipart==0.0.32
+lupa==2.8
+psutil==6.1.1
+PyQt5==5.15.11
+pyinstaller==6.11.1
