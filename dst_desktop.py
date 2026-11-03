@@ -39,7 +39,7 @@ if sys.stdout is None or sys.stderr is None:
 
 from fastapi import HTTPException  # noqa: E402
 from PyQt5.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal  # noqa: E402
-from PyQt5.QtGui import QColor, QDesktopServices, QFont, QPalette  # noqa: E402
+from PyQt5.QtGui import QColor, QDesktopServices, QFont, QIcon, QPalette  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -51,6 +51,8 @@ import app as core  # noqa: E402
 import remote_link  # noqa: E402
 
 APP_NAME = "DST Launcher"
+# Bản exe giải nén assets/ vào sys._MEIPASS.
+ICON_FILE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "assets" / "icon.png"
 
 STATUS_TEXT = {"online": "Online", "starting": "Đang khởi động", "stopping": "Đang tắt", "offline": "Offline"}
 STATUS_COLOR = {"online": "#6fbf73", "starting": "#e0a03a", "stopping": "#e0a03a", "offline": "#a59a87"}
@@ -423,8 +425,8 @@ class RemotePage(QWidget):
         self.interval = QSpinBox()
         self.interval.setRange(1, 1440)
         self.interval.setSuffix(" phút")
-        self.stop_remote = QCheckBox("Dừng server trên VPS khi mở app (bỏ qua nếu đang có người chơi)")
-        self.restart_remote = QCheckBox("Bật lại server trên VPS khi đóng app")
+        self.stop_remote = QCheckBox("Dừng server trên VPS trước khi bật server ở máy này (không dừng nếu đang có người chơi)")
+        self.restart_remote = QCheckBox("Bật lại server trên VPS khi đóng app (hoặc khi app mất kết nối quá 5 phút)")
         form.addRow("Địa chỉ web panel", self.url)
         form.addRow("Tài khoản", self.user)
         form.addRow("Mật khẩu", self.password)
@@ -1309,8 +1311,13 @@ def main():
 
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    if os.name == "nt":
+        # Để taskbar dùng icon của app thay vì icon của python.exe khi chạy từ mã nguồn.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DSTLauncher")
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setWindowIcon(QIcon(str(ICON_FILE)))
     app.setFont(QFont("Segoe UI", 10) if os.name == "nt" else app.font())
     apply_theme(app)
 

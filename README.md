@@ -152,8 +152,10 @@ App giao diện PyQt5 (`dst_desktop.py`) dùng chung lõi với web panel (`app.
 **Liên kết với VPS** (mục "Liên kết VPS" ở thanh bên):
 
 - Nhập địa chỉ + tài khoản web panel, bấm **Đồng bộ**: app tạo ở máy local các server giống hệt trên web (cùng ID, cluster token, mod, Caves) và lấy thế giới về.
-- Khi mở app: dừng các server đó trên VPS (bỏ qua nếu đang có người chơi), rồi đồng bộ thế giới 2 chiều mỗi 10 phút (đổi được).
+- Khi mở app: đồng bộ thế giới 2 chiều, rồi cứ 10 phút một lần (đổi được).
+- Khi bật một server ở máy local: dừng server đó trên VPS trước (không bật nếu trên VPS đang có người chơi), lấy thế giới mới nhất về rồi mới khởi chạy.
 - Khi đóng app: lưu và tắt server local, đồng bộ lần cuối, bật lại server trên VPS mà app đã dừng.
+- App tắt ngang hoặc mất mạng quá 5 phút: web panel trên VPS tự bật lại server mà app đã dừng (cần cập nhật web panel trên VPS lên bản mới).
 - Không dùng chung với agent PowerShell (`sync_agent/`) cho cùng một server.
 
 **Build exe**: trên Windows chạy `build_desktop.bat` (cần Python 3.12 64-bit) → `dist\DSTLauncher.exe`. Hoặc đẩy một tag `launcher-v*` lên GitHub: workflow "Build DST Launcher (Windows)" tự build và đính exe vào mục Releases.

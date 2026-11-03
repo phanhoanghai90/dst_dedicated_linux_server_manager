@@ -3,8 +3,10 @@ Liên kết app desktop (DST Launcher trên Windows) với DST Web Panel trên V
 
 - "Đồng bộ" (pull_configs): lấy danh sách server trên web, tạo server giống hệt ở máy local
   (cùng ID, cluster token, mod, bật/tắt Caves) rồi đồng bộ thế giới.
-- Khi app mở: dừng các server đó trên VPS (nếu không có người chơi), rồi cứ interval_min phút
-  đồng bộ thế giới 2 chiều một lần (cùng giao thức /sync-api với agent PowerShell).
+- Cứ interval_min phút đồng bộ thế giới 2 chiều một lần (cùng giao thức /sync-api với agent PowerShell).
+- Bật server ở máy local: dừng server đó trên VPS trước (không dừng nếu đang có người chơi),
+  lấy thế giới mới nhất về rồi mới khởi chạy.
+- App "giữ" server đã dừng qua mỗi lần poll; app mất kết nối quá SYNC_HOLD_SECONDS thì VPS tự bật lại.
 - Khi app đóng: tắt server local (có lưu), đồng bộ lần cuối, bật lại server trên VPS mà app đã dừng.
 """
 
@@ -124,6 +126,15 @@ def request(path, body=None, raw=None, method=None, sync_token=None, binary=Fals
     return content if binary else json.loads(content or b"{}")
 
 
+def poll(cid, token, folder="DST Launcher", timeout=900):
+    """Báo VPS app còn sống, kèm cờ hold: VPS tự bật lại server đang bị giữ nếu app im lặng quá lâu."""
+
+    link = load_link()
+    hold = cid in link["stopped_by_app"] and link["restart_remote_on_exit"]
+    return request(f"/sync-api/{cid}/poll", {"version": 1, "folder": folder, "host": socket.gethostname(), "hold": hold},
+                   sync_token=token, timeout=timeout)
+
+
 # ------------------------------------------------------------------------------------ #
 # Đồng bộ thế giới của một server (cùng thuật toán với agent PowerShell)
 
@@ -155,7 +166,7 @@ def _pull(cluster, token, server, local):
     # Cấu hình riêng của app (không nằm trong file đồng bộ) theo cluster.ini / modoverrides vừa lấy về.
     caves = core.read_ini(cluster.dir / "cluster.ini").getboolean("SHARD", "shard_enabled", fallback=True)
     modoverrides = cluster.editable("modoverrides")
-    mod_ids = re.findall(r"workshop-(\d+)", modoverrides.read_text()) if modoverrides.exists() else []
+    mod_ids = re.findall(r"workshop-(\d+)", modoverrides.read_text(encoding="utf-8")) if modoverrides.exists() else []
     settings = cluster.load_settings()
     cluster.update_settings(caves_enabled=caves, mods=list(dict.fromkeys(settings.get("mods", []) + mod_ids)))
     core.write_mods_setup()
@@ -197,8 +208,7 @@ def sync_world(cid, final=False):
         return ok
 
     try:
-        request(f"/sync-api/{cid}/poll", {"version": 1, "folder": f"DST Launcher: {cluster.dir}",
-                                          "host": socket.gethostname()}, sync_token=token)
+        poll(cid, token, f"DST Launcher: {cluster.dir}")
 
         master = cluster.shards["Master"]
         local_running = cluster.any_running()
@@ -273,7 +283,7 @@ def pull_configs():
             log(f"[{cid}] Đã tạo server local \"{info['name']}\".")
 
         if info["cluster_token"]:
-            cluster.token_file.write_text(info["cluster_token"])
+            cluster.token_file.write_text(info["cluster_token"], encoding="utf-8")
 
         cluster.update_settings(mods=info["mods"], caves_enabled=info["caves_enabled"])
         link["clusters"][cid] = {"sync_token": info["sync_token"]}
@@ -288,39 +298,54 @@ def remote_cluster(cid):
     return request(f"/api/clusters/{cid}")
 
 
-def stop_remote_servers():
-    link = load_link()
-    stopped = list(link["stopped_by_app"])
+def remote_offline(st):
+    return all(s["status"] == "offline" for s in st["shards"].values())
 
-    for cid in link["clusters"]:
+
+def hold_remote(cid, say=log):
+    """Dừng server cid trên VPS và giữ nó tắt. Trả về False nếu không dừng vì đang có người chơi."""
+
+    st = remote_cluster(cid)
+
+    if remote_offline(st):
+        return True
+
+    players = (st.get("stats") or {}).get("players") or []
+
+    if players:
+        say(f"[{cid}] Đang có {len(players)} người chơi trên VPS ({', '.join(players)}), không dừng server.")
+        return False
+
+    say(f"[{cid}] Dừng server trên VPS (sẽ bật lại khi thoát app)...")
+    link = load_link()
+
+    if cid not in link["stopped_by_app"]:
+        update_link(stopped_by_app=link["stopped_by_app"] + [cid])
+
+    # Báo VPS đang giữ ngay, phòng khi app tắt ngang trước lần poll kế tiếp.
+    try:
+        poll(cid, link["clusters"][cid]["sync_token"], timeout=30)
+    except (RemoteError, KeyError):
+        pass
+
+    request(f"/api/clusters/{cid}/stop", method="POST")
+
+    for _ in range(60):  # chờ tối đa 3 phút
+        time.sleep(3)
+        st = remote_cluster(cid)
+        if remote_offline(st) and not st.get("busy"):
+            say(f"[{cid}] Server trên VPS đã dừng.")
+            return True
+
+    raise RemoteError("Server trên VPS chưa dừng sau 3 phút.")
+
+
+def stop_remote_servers():
+    for cid in load_link()["clusters"]:
         try:
-            st = remote_cluster(cid)
+            hold_remote(cid)
         except RemoteError as e:
             log(f"[{cid}] {e}")
-            continue
-
-        if all(s["status"] == "offline" for s in st["shards"].values()):
-            continue
-
-        players = (st.get("stats") or {}).get("players") or []
-
-        if players:
-            log(f"[{cid}] Đang có {len(players)} người chơi trên VPS ({', '.join(players)}), không dừng server.")
-            continue
-
-        log(f"[{cid}] Dừng server trên VPS (sẽ bật lại khi thoát app)...")
-        request(f"/api/clusters/{cid}/stop", method="POST")
-
-        if cid not in stopped:
-            stopped.append(cid)
-        update_link(stopped_by_app=stopped)
-
-        for _ in range(60):  # chờ tối đa 3 phút
-            time.sleep(3)
-            st = remote_cluster(cid)
-            if all(s["status"] == "offline" for s in st["shards"].values()) and not st.get("busy"):
-                log(f"[{cid}] Server trên VPS đã dừng.")
-                break
 
 
 def restart_remote_servers():
@@ -336,6 +361,46 @@ def restart_remote_servers():
             remaining.append(cid)
 
     update_link(stopped_by_app=remaining)
+
+    # Thả cờ giữ ngay, để VPS không tự bật lại lần nữa sau khi app thoát.
+    for cid in set(link["stopped_by_app"]) - set(remaining):
+        try:
+            poll(cid, link["clusters"][cid]["sync_token"], timeout=30)
+        except (RemoteError, KeyError):
+            pass
+
+
+def before_local_start(cluster):
+    """core.before_start_hook: dừng server trên VPS rồi lấy thế giới mới nhất về, sau đó mới bật ở máy local."""
+
+    link = load_link()
+    cid = cluster.id
+
+    if not (link["stop_remote"] and configured(link) and cid in link["clusters"]):
+        return
+
+    def say(text):
+        log(text)
+        cluster.shards["Master"].log(f"[web] {text}")
+
+    try:
+        if not hold_remote(cid, say):
+            raise HTTPException(409, "Server này đang có người chơi trên VPS. Đợi mọi người thoát hoặc tắt server "
+                                     "trên web rồi bật lại, để tránh hai nơi cùng chạy một thế giới.")
+    except RemoteError as e:
+        say(f"[{cid}] Không dừng được server trên VPS ({e}), vẫn bật server ở máy này.")
+        return
+
+    if not _job_lock.acquire(timeout=600):
+        say(f"[{cid}] Đang bận đồng bộ việc khác, bỏ qua bước lấy thế giới từ VPS.")
+        return
+
+    try:
+        _state["job"] = "Lấy thế giới trước khi bật server"
+        sync_world(cid)
+    finally:
+        _state["job"] = None
+        _job_lock.release()
 
 
 # ------------------------------------------------------------------------------------ #
@@ -361,39 +426,50 @@ def run_job(name, fn):
 
 
 def startup():
+    # Lần trước app tắt ngang nên VPS đã tự bật lại server: không còn giữ server đó nữa.
     link = load_link()
+    still_held = []
 
-    if link["stop_remote"]:
-        stop_remote_servers()
+    for cid in link["stopped_by_app"]:
+        try:
+            if not remote_offline(remote_cluster(cid)):
+                log(f"[{cid}] Server trên VPS đã được bật lại từ trước.")
+                continue
+        except RemoteError:
+            pass
+        still_held.append(cid)
 
+    update_link(stopped_by_app=still_held)
     sync_all()
 
 
 def background_loop():
     if configured() and load_link()["clusters"]:
         try:
-            run_job("Khởi động: dừng server VPS và đồng bộ", startup)
+            run_job("Khởi động: đồng bộ", startup)
         except HTTPException:
             pass
 
-    while not _state["shutting_down"]:
+    while True:
         time.sleep(POLL_SECONDS)
 
-        if _state["shutting_down"] or not configured():
+        if not configured():
             continue
 
         link = load_link()
         manual = []
 
-        # Hỏi VPS: hiện trạng thái trên web, và nhận yêu cầu "Đồng bộ ngay" bấm từ web.
+        # Hỏi VPS: hiện trạng thái trên web, giữ server đang dừng, và nhận yêu cầu "Đồng bộ ngay" bấm từ web.
+        # Vẫn poll trong lúc đóng app (tắt server local, đồng bộ lần cuối) để VPS không tự bật lại giữa chừng.
         for cid, info in link["clusters"].items():
             try:
-                res = request(f"/sync-api/{cid}/poll", {"version": 1, "folder": "DST Launcher", "host": socket.gethostname()},
-                              sync_token=info.get("sync_token"), timeout=30)
-                if res.get("reason") == "manual":
+                if poll(cid, info.get("sync_token"), timeout=30).get("reason") == "manual":
                     manual.append(cid)
             except RemoteError:
                 pass
+
+        if _state["shutting_down"]:
+            continue
 
         due = _state["next_sync"] is None or time.time() >= _state["next_sync"]
 
@@ -408,6 +484,7 @@ def background_loop():
 
 
 def start():
+    core.before_start_hook = before_local_start
     threading.Thread(target=background_loop, daemon=True).start()
 
 

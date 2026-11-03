@@ -12,6 +12,7 @@ pip install -r requirements-desktop.txt || goto :error
 
 pyinstaller --noconfirm --clean --onefile --windowed --name DSTLauncher ^
   --collect-all lupa --hidden-import remote_link ^
+  --icon assets\icon.ico --add-data "assets\icon.png;assets" ^
   dst_desktop.py || goto :error
 
 echo.

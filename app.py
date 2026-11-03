@@ -83,10 +83,10 @@ _config_lock = threading.Lock()
 def load_config():
     with _config_lock:
         if CONFIG_FILE.exists():
-            return json.loads(CONFIG_FILE.read_text())
+            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
 
         config = {"username": "admin", "password": secrets.token_urlsafe(12)}
-        CONFIG_FILE.write_text(json.dumps(config, indent=2))
+        CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
         CONFIG_FILE.chmod(0o600)
 
         return config
@@ -94,7 +94,7 @@ def load_config():
 
 def save_config(config):
     with _config_lock:
-        CONFIG_FILE.write_text(json.dumps(config, indent=2))
+        CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
         CONFIG_FILE.chmod(0o600)
 
 
@@ -220,7 +220,7 @@ class Shard:
                 return None
 
         try:
-            for line in Path(f"/proc/{self.process.pid}/status").read_text().splitlines():
+            for line in Path(f"/proc/{self.process.pid}/status").read_text(encoding="utf-8").splitlines():
                 if line.startswith("VmRSS:"):
                     return round(int(line.split()[1]) / 1024)
         except OSError:
@@ -351,6 +351,10 @@ class Shard:
 # ------------------------------------------------------------------------------------ #
 # Cluster (một server)
 
+# App desktop gán hàm này: gọi trước khi bật server (dừng server trên VPS, lấy thế giới mới nhất về).
+before_start_hook = None
+
+
 class Cluster:
     def __init__(self, cluster_id):
         self.id = cluster_id
@@ -369,14 +373,14 @@ class Cluster:
             path = self.dir / PANEL_FILE
 
             if path.exists():
-                return json.loads(path.read_text())
+                return json.loads(path.read_text(encoding="utf-8"))
 
             return {"slot": 0, "caves_enabled": True, "mods": []}
 
     def save_settings(self, settings):
         with self._settings_lock:
             self.dir.mkdir(parents=True, exist_ok=True)
-            (self.dir / PANEL_FILE).write_text(json.dumps(settings, indent=2))
+            (self.dir / PANEL_FILE).write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
     def update_settings(self, **values):
         settings = self.load_settings()
@@ -472,9 +476,14 @@ class Cluster:
         ):
             path = self.path(relative)
 
+            # Shard đã có leveldataoverride.lua (vd. thế giới núi lửa của Island Adventures) thì không tạo
+            # worldgenoverride.lua mặc định: preset trong đó sẽ đè lên và game tạo nhầm loại thế giới.
+            if relative.endswith("worldgenoverride.lua") and (path.parent / "leveldataoverride.lua").exists():
+                continue
+
             if not path.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content)
+                path.write_text(content, encoding="utf-8")
 
     def sync_modoverrides(self):
         src = self.editable("modoverrides")
@@ -528,6 +537,8 @@ class Cluster:
         master.status = "starting"
 
         try:
+            if before_start_hook:
+                before_start_hook(self)
             update_game_if_needed(master.log)
             failed = sync_workshop_mods(mod_ids, master.log) if mod_ids else []
         finally:
@@ -759,7 +770,7 @@ def write_mods_setup():
     lines = ["-- Được tạo bởi DST Web Panel, đừng sửa tay.\n"]
     lines += [f'ServerModSetup("{mod_id}")\n' for mod_id in mod_ids]
 
-    MODS_SETUP.write_text("".join(lines))
+    MODS_SETUP.write_text("".join(lines), encoding="utf-8")
 
 
 # ------------------------------------------------------------------------------------ #
@@ -1008,6 +1019,20 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # steamcmd không chạy song song được (cài game và tải mod dùng chung).
 steamcmd_lock = threading.Lock()
 
+
+def download_with_retry(url, dest, log, attempts=5, timeout=30):
+    """Tải file, thử lại khi lỗi mạng (CDN Akamai thỉnh thoảng trả về IP không phản hồi)."""
+    for i in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as res, open(dest, "wb") as f:
+                shutil.copyfileobj(res, f)
+            return
+        except OSError as e:
+            if i == attempts:
+                raise
+            log(f"Tải lỗi ({e}), thử lại lần {i + 1}/{attempts}...")
+            time.sleep(2)
+
 MOD_SIGNATURE_FILE = ".webpanel_source"
 
 
@@ -1046,7 +1071,7 @@ def install_workshop_mod(mod_id):
     dst = MODS_DIR / f"workshop-{mod_id}"
     signature = workshop_signature(src)
 
-    if (dst / MOD_SIGNATURE_FILE).exists() and (dst / MOD_SIGNATURE_FILE).read_text() == signature:
+    if (dst / MOD_SIGNATURE_FILE).exists() and (dst / MOD_SIGNATURE_FILE).read_text(encoding="utf-8") == signature:
         return False
 
     tmp = dst.with_name(dst.name + ".tmp")
@@ -1060,7 +1085,7 @@ def install_workshop_mod(mod_id):
     else:
         shutil.copytree(src, tmp)
 
-    (tmp / MOD_SIGNATURE_FILE).write_text(signature)
+    (tmp / MOD_SIGNATURE_FILE).write_text(signature, encoding="utf-8")
 
     shutil.rmtree(dst, ignore_errors=True)
     tmp.rename(dst)
@@ -1296,7 +1321,7 @@ class InstallJob:
                 self.log("Đang tải steamcmd...")
                 STEAMCMD_DIR.mkdir(parents=True, exist_ok=True)
                 archive = STEAMCMD_DIR / STEAMCMD_URL.rsplit("/", 1)[1]
-                urllib.request.urlretrieve(STEAMCMD_URL, archive)
+                download_with_retry(STEAMCMD_URL, archive, self.log)
 
                 if IS_WINDOWS:
                     with zipfile.ZipFile(archive) as zf:
@@ -1330,7 +1355,7 @@ def installed_build():
     manifest = SERVER_DIR / "steamapps" / f"appmanifest_{DST_APP_ID}.acf"
 
     if manifest.exists():
-        match = re.search(r'"buildid"\s+"(\d+)"', manifest.read_text())
+        match = re.search(r'"buildid"\s+"(\d+)"', manifest.read_text(encoding="utf-8"))
         if match:
             return match.group(1)
 
@@ -1348,7 +1373,7 @@ def memory_info():
 
     info = {}
 
-    for line in Path("/proc/meminfo").read_text().splitlines():
+    for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
         key, value = line.split(":", 1)
         info[key] = int(value.split()[0]) // 1024
 
@@ -1478,7 +1503,7 @@ def finish_world_import(cluster, has_caves):
 
     # Lấy danh sách mod từ modoverrides để server tự tải.
     modoverrides = cluster.editable("modoverrides")
-    mod_ids = re.findall(r"workshop-(\d+)", modoverrides.read_text()) if modoverrides.exists() else []
+    mod_ids = re.findall(r"workshop-(\d+)", modoverrides.read_text(encoding="utf-8")) if modoverrides.exists() else []
 
     settings = cluster.load_settings()
     cluster.update_settings(caves_enabled=has_caves, mods=list(dict.fromkeys(settings.get("mods", []) + mod_ids)))
@@ -1510,6 +1535,7 @@ async def lifespan(app):
     registry.load()
     threading.Thread(target=stats_loop, daemon=True).start()
     threading.Thread(target=auto_update_loop, daemon=True).start()
+    threading.Thread(target=sync_hold_loop, daemon=True).start()
     yield
 
     threads = [t for c in registry.all() for t in c.stop_all()]
@@ -1800,7 +1826,7 @@ def get_token(cluster: Cluster = Depends(get_cluster)):
     if not cluster.token_file.exists():
         return {"set": False, "preview": ""}
 
-    token = cluster.token_file.read_text().strip()
+    token = cluster.token_file.read_text(encoding="utf-8").strip()
     return {"set": True, "preview": token[:10] + "…" + token[-4:] if len(token) > 16 else "***"}
 
 
@@ -1812,7 +1838,7 @@ def put_token(body: Token, cluster: Cluster = Depends(get_cluster)):
         raise HTTPException(400, "Token không hợp lệ.")
 
     cluster.ensure_files()
-    cluster.token_file.write_text(token)
+    cluster.token_file.write_text(token, encoding="utf-8")
     cluster.token_file.chmod(0o600)
 
     for shard in cluster.shards.values():
@@ -1935,7 +1961,7 @@ def put_modconfig(body: ModConfigs, cluster: Cluster = Depends(get_cluster)):
         overrides[folder] = entry
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("return " + to_lua(overrides) + "\n")
+    path.write_text("return " + to_lua(overrides) + "\n", encoding="utf-8")
     cluster.sync_modoverrides()
 
     return {"ok": True}
@@ -2139,6 +2165,7 @@ SYNC_SKIP_DIRS     = {"backup"}
 SYNC_MANIFEST_NAME = "__dstsync_manifest.json"
 SYNC_RETRY_SECONDS = 30 * 60   # đồng bộ hỏng/bị hoãn thì thử lại sau chừng này
 SYNC_ONLINE_SECONDS = 120      # agent không hỏi quá chừng này thì coi là mất kết nối
+SYNC_HOLD_SECONDS  = 5 * 60    # app desktop đang giữ server mà mất kết nối quá chừng này thì tự bật lại server
 SYNC_HISTORY_KEEP  = 20
 SYNC_MODES         = ("auto", "pull", "push")
 
@@ -2151,11 +2178,12 @@ def sync_state_path(cid):
 
 def sync_load(cid):
     path = sync_state_path(cid)
-    state = json.loads(path.read_text()) if path.exists() else {}
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     for key, value in {
         "token": None, "interval_hours": 24, "baseline": None, "pending": None, "requested": None,
         "last_attempt": 0, "last_success": 0, "running_since": 0, "agent": None, "history": [],
+        "hold": None,  # {"seen", "host"}: app desktop đã dừng server này để chạy ở máy local
     }.items():
         state.setdefault(key, value)
 
@@ -2170,7 +2198,7 @@ def sync_update(cid, fn):
         result = fn(state)
         SYNC_DIR.mkdir(parents=True, exist_ok=True)
         path = sync_state_path(cid)
-        path.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+        path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
         path.chmod(0o600)
         return result
 
@@ -2272,6 +2300,31 @@ def sync_players(cluster):
     return (cluster.stats or {}).get("players") or []
 
 
+def sync_hold_loop():
+    """App desktop dừng server trên VPS để chạy ở máy local; app mất kết nối quá lâu thì tự bật lại server."""
+
+    while True:
+        time.sleep(30)
+
+        for cluster in registry.all():
+            hold = sync_load(cluster.id)["hold"]
+
+            if not hold or time.time() - hold["seen"] < SYNC_HOLD_SECONDS:
+                continue
+
+            sync_update(cluster.id, lambda state: state.update(hold=None))
+
+            if cluster.any_running() or cluster.busy:
+                continue
+
+            cluster.shards["Master"].log(f'[web] App DST Launcher ({hold["host"]}) mất kết nối quá '
+                                         f'{SYNC_HOLD_SECONDS // 60} phút, tự bật lại server.')
+            try:
+                cluster.run_background(cluster.start_all)
+            except HTTPException:
+                pass
+
+
 def sync_add_history(state, ok, action, message):
     state["history"].insert(0, {"time": int(time.time()), "ok": ok, "action": action, "message": message})
     del state["history"][SYNC_HISTORY_KEEP:]
@@ -2320,6 +2373,7 @@ class SyncPoll(BaseModel):
     folder: str = ""
     host: str = ""
     game_running: bool = False
+    hold: bool | None = None  # app desktop: True = đang giữ server tắt, False = thả ra; agent PowerShell không gửi
 
 
 @sync_api.post("/{cid}/poll")
@@ -2329,6 +2383,9 @@ def sync_poll(body: SyncPoll, cluster: Cluster = Depends(sync_cluster)):
     def apply(state):
         state["agent"] = {"seen": int(now), "folder": body.folder[:300], "host": body.host[:100],
                           "version": body.version, "game_running": body.game_running}
+
+        if body.hold is not None:
+            state["hold"] = {"seen": int(now), "host": body.host[:100]} if body.hold else None
 
         if state["requested"]:
             return "manual"
@@ -2501,6 +2558,10 @@ def sync_apply_push(cluster, zip_path):
                 if d.parent != cluster.dir and not any(d.iterdir()):
                     d.rmdir()
 
+            # Bật/tắt Caves theo cluster.ini gửi lên (lựa chọn mới nhất ở máy local); thiếu thì giữ lựa chọn của server.
+            wants_caves = read_ini(cluster.dir / "cluster.ini").getboolean(
+                "SHARD", "shard_enabled", fallback=cluster.load_settings().get("caves_enabled", True))
+
             # Giữ phần [SHARD] của server (port giữa các shard, cluster_key) như khi upload thế giới.
             if own.has_section("SHARD"):
                 parser = read_ini(cluster.dir / "cluster.ini")
@@ -2512,8 +2573,8 @@ def sync_apply_push(cluster, zip_path):
 
                 write_ini(cluster.dir / "cluster.ini", parser)
 
-            # Giữ lựa chọn bật/tắt Caves của server; chỉ tắt khi thế giới gửi lên không có hang.
-            has_caves = cluster.load_settings().get("caves_enabled", True) and any(rel.startswith("Caves/") for rel in local)
+            # Chỉ bật Caves khi thế giới gửi lên có hang.
+            has_caves = wants_caves and any(rel.startswith("Caves/") for rel in local)
             finish_world_import(cluster, has_caves)
             master.log(f"[web] Đồng bộ: đã nhận thế giới từ máy local (bản cũ sao lưu: {backup}).")
         finally:
@@ -2640,7 +2701,7 @@ def desktop_export(cluster: Cluster = Depends(get_cluster)):
     return {
         "id": cluster.id,
         "name": cluster.name(),
-        "cluster_token": cluster.token_file.read_text().strip() if cluster.token_file.exists() else "",
+        "cluster_token": cluster.token_file.read_text(encoding="utf-8").strip() if cluster.token_file.exists() else "",
         "sync_token": sync_update(cluster.id, ensure_token),
         "mods": settings.get("mods", []),
         "caves_enabled": settings.get("caves_enabled", True),
@@ -2670,7 +2731,7 @@ def download_sync_agent(request: Request, cluster: Cluster = Depends(get_cluster
         for name in ("dstsync.ps1", "install.ps1", "uninstall.ps1"):
             zf.writestr(name, bom + (SYNC_AGENT_DIR / name).read_bytes())
 
-        zf.writestr("HUONG_DAN.txt", bom + (SYNC_AGENT_DIR / "HUONG_DAN.txt").read_text().replace("\n", "\r\n").encode())
+        zf.writestr("HUONG_DAN.txt", bom + (SYNC_AGENT_DIR / "HUONG_DAN.txt").read_text(encoding="utf-8").replace("\n", "\r\n").encode())
         zf.writestr("config.json", json.dumps(config, indent=2, ensure_ascii=False))
         zf.writestr("CAI_DAT.bat", SYNC_INSTALL_BAT.replace("\n", "\r\n"))
 
@@ -2687,14 +2748,14 @@ class FileContent(BaseModel):
 @app.get("/api/clusters/{cid}/files/{name}")
 def get_file(name: str, cluster: Cluster = Depends(get_cluster)):
     path = cluster.editable(name)
-    return {"content": path.read_text() if path.exists() else "", "path": str(path)}
+    return {"content": path.read_text(encoding="utf-8") if path.exists() else "", "path": str(path)}
 
 
 @app.put("/api/clusters/{cid}/files/{name}")
 def put_file(name: str, body: FileContent, cluster: Cluster = Depends(get_cluster)):
     path = cluster.editable(name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body.content)
+    path.write_text(body.content, encoding="utf-8")
 
     if name == "modoverrides":
         cluster.sync_modoverrides()

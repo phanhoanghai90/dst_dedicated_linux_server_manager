@@ -28,7 +28,7 @@ die() { printf '\033[1;31mLỗi: %s\033[0m\n' "$*" >&2; exit 1; }
 
 [[ "${1:-}" == "--reset" ]] && { log "Xoá $WINEPREFIX"; rm -rf "$WINEPREFIX"; }
 
-for f in "${SOURCES[@]}" requirements-desktop.txt; do
+for f in "${SOURCES[@]}" requirements-desktop.txt assets/icon.ico assets/icon.png; do
     [[ -f "$ROOT/$f" ]] || die "Thiếu $ROOT/$f"
 done
 
@@ -93,12 +93,14 @@ rm -rf "$WORK"
 mkdir -p "$WORK" "$OUT"
 rm -f "$OUT/DSTLauncher.exe"
 cp "${SOURCES[@]/#/$ROOT/}" "$WORK/"
+cp -r "$ROOT/assets" "$WORK/"
 
 log "Build DSTLauncher.exe bằng PyInstaller..."
 (
     cd "$WORK"
     "${PY[@]}" -m PyInstaller --noconfirm --clean --onefile --windowed --name DSTLauncher \
         --collect-all lupa --hidden-import remote_link \
+        --icon assets/icon.ico --add-data "assets/icon.png;assets" \
         --distpath "$(winepath -w "$OUT")" --workpath "$(winepath -w "$WORK/build")" --specpath "$(winepath -w "$WORK")" \
         dst_desktop.py 2>&1 | grep -E "ERROR|Error|WARNING: lib not found|Building EXE|completed successfully" || true
 )
